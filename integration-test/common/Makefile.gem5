@@ -15,7 +15,7 @@ CFLAGS = -O3 -Wall -Wno-unused-label -I../../common
 # -mno-sse
 GEM5_CFLAGS = -static -O3 -mno-80387 -msoft-float \
               -march=nocona -msse -mfpmath=sse \
-              -fno-exceptions -fno-inline
+              -fno-exceptions -fno-inline -std=c11
 
 INCLUDES += -I$(ALADDIN_HOME)/gem5
 LFLAGS = -lm
@@ -27,12 +27,12 @@ gem5: gem5-cpu gem5-accel
 # Builds the standalone CPU version only.
 gem5-cpu: $(SRCS) $(GEM5_FULL_SRCS)
 	@echo Building benchmark $(BMARK) for gem5.
-	@$(CC) $(GEM5_CFLAGS) $(CFLAGS) $(GEM5_FULL_SRCS) $(SRCS) $(INCLUDES) -o $(BMARK)-gem5 $(LFLAGS)
+	@$(CC) $(GEM5_CFLAGS) $(CFLAGS) $(GEM5_FULL_SRCS) $(SRCS) $(INCLUDES) -o $(BMARK)-cpu-only $(LFLAGS)
 
 # Builds the gem5 version with HW acceleration turned on.
 gem5-accel: $(SRCS) $(GEM5_FULL_SRCS)
 	@echo Building benchmark $(BMARK) for gem5 with HW acceleration.
-	@$(CC) $(GEM5_CFLAGS) $(CFLAGS) -DGEM5_HARNESS $(SRCS) $(GEM5_FULL_SRCS) $(INCLUDES) -o $(BMARK)-gem5-accel $(LFLAGS)
+	@$(CC) $(GEM5_CFLAGS) $(CFLAGS) -DGEM5_HARNESS $(SRCS) $(GEM5_FULL_SRCS) $(INCLUDES) -o $(BMARK) $(LFLAGS)
 
 clean-gem5:
 	rm -rf $(BMARK)-gem5 $(BMARK)-gem5-accel

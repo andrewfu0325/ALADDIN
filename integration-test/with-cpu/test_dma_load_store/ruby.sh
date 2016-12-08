@@ -20,5 +20,5 @@ ${gem5_dir}/build/X86/gem5.opt \
   --l2_size=2MB \
   --xbar_width=16 \
   --accel_cfg_file=${bmk_home}/gem5.cfg \
-  -c ${bmk_home}/test_dma_load_store-gem5-accel \
+  -c ${bmk_home}/test_dma_load_store \
   > stdout.gz
