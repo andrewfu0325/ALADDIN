@@ -13,6 +13,7 @@ ${gem5_dir}/build/X86/gem5.opt \
   --sys-clock=1GHz \
   --cpu-type=detailed \
   --ruby \
+  --topology=Crossbar \
   --caches \
   --l1d_size=64kB \
   --l1i_size=32kB \

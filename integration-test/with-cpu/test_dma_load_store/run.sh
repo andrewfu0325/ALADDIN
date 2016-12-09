@@ -13,6 +13,10 @@ ${gem5_dir}/build/X86/gem5.opt \
   --sys-clock=1GHz \
   --cpu-type=detailed \
   --caches \
+  --l1d_size=64kB \
+  --l1i_size=32kB \
+  --l2cache \
+  --l2_size=2MB \
   --accel_cfg_file=${bmk_home}/gem5.cfg \
   -c ${bmk_home}/test_dma_load_store \
   > stdout.gz
