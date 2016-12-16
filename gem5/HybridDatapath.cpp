@@ -28,6 +28,8 @@
 #include "HybridDatapath.h"
 
 const unsigned int maxInflightNodes = 100;
+int DmaReadHit = 0;
+int DmaReadMiss = 0;
 
 HybridDatapath::HybridDatapath(const HybridDatapathParams* params)
     : ScratchpadDatapath(
@@ -301,6 +303,9 @@ bool HybridDatapath::step() {
     return true;
   } else {
     dumpStats();
+    printf("DMA Read Hit: %d\n", DmaReadHit);
+    printf("DMA Read Miss: %d\n", DmaReadMiss);
+    printf("DMA Read Hit Rate: %f\n", (float)DmaReadHit / ((float)DmaReadHit + (float) DmaReadMiss));
     DPRINTF(Aladdin, "Accelerator completed.\n");
     if (execute_standalone) {
       // If in standalone mode, we wait dmaSetupOverhead before the datapath
