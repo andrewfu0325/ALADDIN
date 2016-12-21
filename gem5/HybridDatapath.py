@@ -30,6 +30,7 @@ class HybridDatapath(MemObject):
   ignoreCacheFlush = Param.Bool(False, "Ignore Cache Flush latency.")
   invalidateOnDmaStore = Param.Bool(True, "Invalidate the region of memory "
       "that will be modified by a dmaStore before issuing the DMA request.")
+  dmaFetchFromDRAM = Param.Bool(False, "Enable DMA fetchs from DRAM.")
 
   # Cache parameters.
   cacheSize = Param.String("16kB", "Private cache size")

@@ -68,6 +68,7 @@ HybridDatapath::HybridDatapath(const HybridDatapathParams* params)
                          params->acceleratorName),
       pipelinedDma(params->pipelinedDma),
       ignoreCacheFlush(params->ignoreCacheFlush),
+      dmaFetchFromDRAM(params->dmaFetchFromDRAM),
       tickEvent(this), delayedDmaEvent(this), executedNodesLastTrigger(0) {
   BaseDatapath::use_db = params->useDb;
   BaseDatapath::experiment_name = params->experimentName;
@@ -516,6 +517,7 @@ void HybridDatapath::issueDmaRequest(unsigned node_id) {
   ExecNode *node = exec_nodes[node_id];
   markNodeStarted(node);
   bool isLoad = node->is_dma_load();
+  bool isDRAM = dmaFetchFromDRAM;
   MemAccess* mem_access = node->get_mem_access();
   Addr base_addr = mem_access->vaddr;
   size_t offset = mem_access->offset;
@@ -535,7 +537,10 @@ void HybridDatapath::issueDmaRequest(unsigned node_id) {
     registers.getRegister(array_label)->increment_dma_accesses(isLoad);
   inflight_dma_nodes[node_id] = WaitingFromDma;
   Addr vaddr = (base_addr + offset) & ADDR_MASK;
-  MemCmd::Command cmd = isLoad ? MemCmd::ReadReq : MemCmd::WriteReq;
+  // TODO: This is a fixed approach for now
+  MemCmd::Command cmd = isLoad ? 
+                        (isDRAM ? MemCmd::ReadFromDRAMReq : MemCmd::ReadReq) : 
+                        MemCmd::WriteReq;
   // Marking the DMA packets as uncacheable ensures they are not snooped by
   // caches.
   Request::Flags flags = Request::UNCACHEABLE;

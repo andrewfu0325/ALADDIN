@@ -382,6 +382,9 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
 
   // Name of the datapath object assigned by gem5.
   std::string datapath_name;
+
+  // Enable DMA fetchs from DRAM
+  bool dmaFetchFromDRAM;
 };
 
 #endif
