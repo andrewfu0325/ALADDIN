@@ -20,3 +20,4 @@ gem5_dir=${ALADDIN_HOME}/../..
   --l2_size=2MB \
   --accel_cfg_file=${bmk_home}/gem5.cfg \
   -c ${bmk_home}/test_dma_load_store \
+  > stdout.gz
