@@ -30,6 +30,9 @@
 const unsigned int maxInflightNodes = 100;
 int DmaReadHit = 0;
 int DmaReadMiss = 0;
+int NumDMAReq = 0;
+std::map<uint64_t, uint64_t> ReqLatency;
+
 
 HybridDatapath::HybridDatapath(const HybridDatapathParams* params)
     : ScratchpadDatapath(
@@ -304,6 +307,13 @@ bool HybridDatapath::step() {
     return true;
   } else {
     dumpStats();
+    double TotLatency = 0;
+    for(auto it : ReqLatency) {
+    //    printf("Req: %#x: %ld\n", it.first, it.second);
+        TotLatency += (double)it.second;
+    }
+    printf("Num of DMA Req: %d\n", NumDMAReq);
+    printf("Average DMA Request Latency: %lf\n", TotLatency / (double)NumDMAReq);
     printf("DMA Read Hit: %d\n", DmaReadHit);
     printf("DMA Read Miss: %d\n", DmaReadMiss);
     printf("DMA Read Hit Rate: %f\n", (float)DmaReadHit / ((float)DmaReadHit + (float) DmaReadMiss));

@@ -385,6 +385,8 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
 
   // Enable DMA fetchs from DRAM
   bool dmaFetchFromDRAM;
+  // Sweep Testing
+  unsigned numOnCacheData;
 };
 
 #endif

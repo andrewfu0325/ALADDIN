@@ -4,30 +4,46 @@ bmk_home=${ALADDIN_HOME}/integration-test/with-cpu/test_dma_load_store
 gem5_dir=${ALADDIN_HOME}/../..
 
   ${gem5_dir}/build/X86_MOESI_CMP_directory/gem5.opt \
-  --debug-flags=ProtocolTrace \
+  --debug-flags=ProtocolTrace,DMA \
   --outdir=${bmk_home}/outputs \
   ${gem5_dir}/configs/aladdin/aladdin_se.py \
   --num-cpus=1 \
   --enable_prefetchers \
-  --mem-size=8GB \
+  --num-mems=2 \
+  --mem-size=1GB \
   --mem-type=LPDDR3_1600_x32  \
+  --cpu-clock=2GHz \
   --sys-clock=1GHz \
   --cpu-type=detailed \
   --ruby \
-  --topology=Crossbar \
+  --topology=Cluster \
   --caches \
-  --l1d_size=1kB \
+  --sweep_l1d_size=64kB \
+  --l1d_size=64kB \
   --l1i_size=32kB \
-  --l1_mshrs=64 \
+  --l1d_assoc=2 \
+  --l1i_assoc=2 \
+  --l1_mshrs=32 \
+  --l1d_banks=2 \
+  --l1i_banks=2 \
   --l2cache \
-  --l2_size=1kB \
+  --num-l2caches=1 \
+  --l2_size=64kB \
+  --l2_assoc=8 \
   --l2_mshrs=32 \
-  --dir_banks=16 \
-  --dir_mshrs=16 \
-  --dir_latency=32 \
-  --dma_outstanding_requests=16 \
+  --l2_banks=8 \
+  --l2_hit_latency=5 \
+  --num-dirs=1 \
+  --dir_size=2MB \
+  --dir_banks=4 \
+  --dir_mshrs=32 \
+  --dir_latency=4 \
+  --dma_outstanding_requests=4 \
+  --bus_bw=5 \
+  --xbar_width=4096 \
   --accel_cfg_file=${bmk_home}/gem5.cfg \
-  -c ${bmk_home}/test_dma_load_store \
-  > stdout.gz
+  -o $1 \
+  --cmd ${bmk_home}/test_dma_load_store \
+  > stdout_$2.gz
 #  --mem-type=DDR3_1600_x64  \
-  #--debug-flags= \
+#  --debug-flags=ProtocolTrace,DMA,NoncoherentXBar \
