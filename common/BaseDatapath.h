@@ -32,7 +32,10 @@
 #include "generic_func.h"
 #include "Registers.h"
 #include "Scratchpad.h"
+#include "SourceManager.h"
+#include "DynamicEntity.h"
 
+#define MEMORY_EDGE -1
 #define CONTROL_EDGE 11
 #define PIPE_EDGE 12
 
@@ -163,27 +166,30 @@ inline microop_label_writer<Map> make_microop_label_writer(Map map) {
 
 class BaseDatapath {
  public:
-  BaseDatapath(std::string bench,
-               std::string trace_file_name,
-               std::string config_file);
+  BaseDatapath(std::string& bench,
+               std::string& trace_file_name,
+               std::string& _config_file);
   virtual ~BaseDatapath();
 
   // Build graph.
   void buildDddg();
 
+  SourceManager& get_source_manager() { return srcManager; }
+
   // Change graph.
   void addDddgEdge(unsigned int from, unsigned int to, uint8_t parid);
   ExecNode* insertNode(unsigned node_id, uint8_t microop);
-  void setLabelMap(std::multimap<unsigned, label_t>& _labelmap) {
+  void setLabelMap(std::multimap<unsigned, UniqueLabel>& _labelmap) {
     labelmap = _labelmap;
   }
-  void addCallArgumentMapping(std::string callee_reg_id,
-                              std::string caller_reg_id);
-  std::string getCallerRegID(std::string callee_func,
-                             std::string reg_id);
+  void addCallArgumentMapping(DynamicVariable& callee_reg_id,
+                              DynamicVariable& caller_reg_id);
+  DynamicVariable getCallerRegID(DynamicVariable& reg_id);
   virtual void prepareForScheduling();
   virtual int rescheduleNodesWhenNeeded();
   void dumpGraph(std::string graph_name);
+
+  bool isReadyMode() const { return ready_mode; }
 
   // Accessing graph stats.
   std::string getBenchName() { return benchName; }
@@ -195,6 +201,8 @@ class BaseDatapath {
   int getNumOfConnectedNodes(unsigned int node_id) {
     return boost::degree(exec_nodes[node_id]->get_vertex(), graph_);
   }
+  // Return all nodes with dependencies originating from OR leaving this node.
+  std::vector<unsigned> getConnectedNodes(unsigned int node_id);
   int getUnrolledLoopBoundary(unsigned int region_id) {
     return loopBound.at(region_id);
   }
@@ -294,7 +302,7 @@ class BaseDatapath {
   }
 
   // Configuration parsing and handling.
-  void parse_config(std::string bench, std::string config_file);
+  void parse_config(std::string& bench, std::string& config_file);
 
   // Returns the unrolling factor for the loop bounded at this node.
   unrolling_config_t::iterator getUnrollFactor(ExecNode* node);
@@ -383,7 +391,6 @@ class BaseDatapath {
   std::string benchName;
   int num_cycles;
   float cycleTime;
-  std::string config_file;
 
   bool pipelining;
   /* Unrolling and flattening share unrolling_config;
@@ -393,8 +400,10 @@ class BaseDatapath {
   /* complete, block, cyclic, and cache partition share partition_config */
   partition_config_t partition_config;
 
+  SourceManager srcManager;
+
   /* Stores the register name mapping between caller and callee functions. */
-  std::unordered_map<std::string, std::string> call_argument_map;
+  std::unordered_map<DynamicVariable, DynamicVariable> call_argument_map;
 
   /* True if the summarized results should be stored to a database, false
    * otherwise */
@@ -418,7 +427,7 @@ class BaseDatapath {
   std::map<unsigned int, ExecNode*> exec_nodes;
 
   // Maps line numbers to labels.
-  std::multimap<unsigned, label_t> labelmap;
+  std::multimap<unsigned, UniqueLabel> labelmap;
   std::vector<regEntry> regStats;
   std::unordered_set<std::string> functionNames;
   std::vector<int> loopBound;
@@ -428,8 +437,10 @@ class BaseDatapath {
   std::list<ExecNode*> executingQueue;
   std::list<ExecNode*> readyToExecuteQueue;
 
-  // Trace file.
+  // Trace file name.
   gzFile trace_file;
+  size_t current_trace_off;
+  size_t trace_size;
 
   // Scratchpad config.
   /* True if ready-bit Scratchpad is used. */

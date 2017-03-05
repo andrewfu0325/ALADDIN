@@ -46,12 +46,13 @@ mkdir build
 
 * It will compile these two libraries to `$BOOST_ROOT/stage/lib`
 
-2. Recent version of GCC including some C++11 features (GCC 4.5+ should be ok).
-We use GCC 4.8.1.
+2. GCC 4.7+ or more recent is *required*. However, we strongly suggest 4.9+, as we use many C++11 features.
 
 3. LLVM 3.4.0 and Clang 3.4.0 64-bit. Notice that LLVM is not backward compatible. We recommend users to use the exact versions for LLVM and Clang.
 
-4. LLVM IR Trace Profiler (LLVM-Tracer)
+4. zlib 1.2.8 or later.
+
+5. LLVM IR Trace Profiler (LLVM-Tracer)
 LLVM-Tracer is an LLVM compiler pass that instruments code in LLVM
 machine-independent IR. It prints out a dynamic trace of your program, which can
 then be taken as an input for Aladdin.

@@ -7,51 +7,77 @@
 
 #include "opcode_func.h"
 #include "typedefs.h"
+#include "SourceEntity.h"
+#include "SourceManager.h"
+#include "DynamicEntity.h"
 
-#define BYTE_SIZE 8
+#define BYTE 8
+
+// TODO: Is this correct in 64-bit mode?
+//
 // Bitmask to ensure that we don't attempt to access above the 32-bit address
 // space assuming a 4GB memory. In accelerator simulation with memory system,
-// the mem_bus address range is the same as memory size, in stead of the 48-bit
+// the mem_bus address range is the same as memory size, instead of the 48-bit
 // address space in the X86_64 implementation.
 #define ADDR_MASK 0xffffffff
 
-// Stores all information about a memory access.
-struct MemAccess {
-  // Address read from the trace.
-  Addr vaddr;
-  // Physical address (used for caches only).
-  Addr paddr;
-  // Size of the memory access in bytes.
-  size_t size;
-  // HACK: Additional offset from vaddr/paddr, used to work around dependence
-  // analysis bugs when dmaLoading from non-base addresses.
-  size_t offset;
-  // Is floating-point value or not.
-  bool is_float;
-  // Hex representation of the value loaded or stored.  For FP values, this is
-  // the IEEE-754 representation.
-  uint64_t value;
+// Stores basic information about a typical memory access.
+class MemAccess {
+  public:
+    MemAccess() : vaddr(0), paddr(0), size(0), is_float(false), value(0) {}
 
-  MemAccess() {
-    vaddr = 0x0;
-    paddr = 0x0;
-    offset = 0x0;
-    size = 0;
-    is_float = false;
-    value = 0;
-  }
+    // Address read from the trace.
+    Addr vaddr;
+    // Physical address (used for caches only).
+    Addr paddr;
+    // Size of the memory access in bytes.
+    size_t size;
+    // Is floating-point value or not.
+    bool is_float;
+    // Hex representation of the value loaded or stored.  For FP values, this is
+    // the IEEE-754 representation.
+    uint64_t value;
+};
+
+class DmaMemAccess : public MemAccess {
+  public:
+    DmaMemAccess()
+        : MemAccess()
+        , src_off(0)
+        , dst_off(0) {}
+
+    DmaMemAccess(size_t off)
+        : MemAccess()
+        , src_off(off)
+        , dst_off(off) {}
+
+    DmaMemAccess(size_t src_off, size_t dst_off)
+        : MemAccess()
+        , src_off(src_off)
+        , dst_off(dst_off) {}
+
+    /* Additional offset from vaddr/paddr.
+     *
+     * This is used to work around dependence analysis bugs when dmaLoading
+     * from non-base addresses. In the simplest case, src_off and dst_off are
+     * equal, but they don't have to be. Double buffering is a common example
+     * of where a source offset might be some number N, but the destination
+     * offset could be 0, the beginning of the scratchpad.
+     */
+    size_t src_off;
+    size_t dst_off;
 };
 
 class ExecNode {
 
  public:
   ExecNode(unsigned int _node_id, uint8_t _microop)
-      : node_id(_node_id), microop(_microop), static_method(""),
-        basic_block_id(""), inst_id(""), line_num(-1), start_execution_cycle(0),
-        complete_execution_cycle(0), num_parents(0), isolated(true),
-        inductive(false), dynamic_mem_op(false), double_precision(false),
-        array_label(""), partition_index(0), time_before_execution(0.0),
-        mem_access(nullptr), vertex_assigned(false) {}
+      : node_id(_node_id), microop(_microop), dynamic_invocation(0),
+        line_num(-1), start_execution_cycle(0), complete_execution_cycle(0),
+        num_parents(0), isolated(true), inductive(false), dynamic_mem_op(false),
+        double_precision(false), array_label(""), partition_index(0),
+        time_before_execution(0.0), mem_access(nullptr), static_inst_id(-1),
+        static_function_id(-1), variable_id(-1), vertex_assigned(false) {}
 
   ~ExecNode() {
     if (mem_access)
@@ -72,10 +98,10 @@ class ExecNode {
   /* Accessors. */
   unsigned int get_node_id() const { return node_id; }
   uint8_t get_microop() { return microop; }
-  std::string get_static_method() { return static_method; }
+  src_id_t get_static_function_id() { return static_function_id; }
+  src_id_t get_variable_id() { return variable_id; }
   unsigned int get_dynamic_invocation() { return dynamic_invocation; }
-  std::string get_basic_block_id() { return basic_block_id; }
-  std::string get_inst_id() { return inst_id; }
+  src_id_t get_static_inst_id() { return static_inst_id; }
   int get_line_num() { return line_num; }
   int get_start_execution_cycle() { return start_execution_cycle; }
   int get_complete_execution_cycle() { return complete_execution_cycle; }
@@ -90,16 +116,19 @@ class ExecNode {
   unsigned get_partition_index() { return partition_index; }
   bool has_array_label() { return (array_label.compare("") != 0); }
   MemAccess* get_mem_access() { return mem_access; }
+  DmaMemAccess* get_dma_mem_access() { return static_cast<DmaMemAccess*>(mem_access); }
   float get_time_before_execution() { return time_before_execution; }
 
   /* Setters. */
   void set_microop(uint8_t microop) { this->microop = microop; }
-  void set_static_method(std::string method) { static_method = method; }
+  void set_variable_id(src_id_t id) { variable_id = id; }
+  void set_static_function_id(src_id_t func_id) {
+    static_function_id = func_id;
+  }
   void set_dynamic_invocation(unsigned int invocation) {
     dynamic_invocation = invocation;
   }
-  void set_basic_block_id(std::string bb_id) { basic_block_id = bb_id; }
-  void set_inst_id(std::string id) { inst_id = id; }
+  void set_static_inst_id(src_id_t id) { static_inst_id = id; }
   void set_line_num(int line) { line_num = line; }
   void set_start_execution_cycle(int cycle) { start_execution_cycle = cycle; }
   void set_complete_execution_cycle(int cycle) {
@@ -119,31 +148,41 @@ class ExecNode {
   void set_array_label(std::string label) { array_label = label; }
   void set_partition_index(unsigned index) { partition_index = index; }
   void set_mem_access(long long int vaddr,
-                      size_t offset,
                       size_t size_in_bytes,
                       bool is_float = false,
                       uint64_t value = 0) {
-    mem_access = new MemAccess;
+    mem_access = new MemAccess();
     mem_access->vaddr = vaddr;
-    mem_access->offset = offset;
+    mem_access->size = size_in_bytes;
+    mem_access->is_float = is_float;
+    mem_access->value = value;
+  }
+  void set_dma_mem_access(long long int vaddr,
+                          size_t src_offset,
+                          size_t dst_offset,
+                          size_t size_in_bytes,
+                          bool is_float = false,
+                          uint64_t value = 0) {
+    mem_access = new DmaMemAccess(src_offset, dst_offset);
+    mem_access->vaddr = vaddr;
     mem_access->size = size_in_bytes;
     mem_access->is_float = is_float;
     mem_access->value = value;
   }
   void set_time_before_execution(float time) { time_before_execution = time; }
 
-  /* Compound accessors. */
-  std::string get_dynamic_method() {
-    // TODO: Really inefficient - make something better.
-    std::stringstream oss;
-    oss << static_method << "-" << dynamic_invocation;
-    return oss.str();
+  DynamicFunction get_dynamic_function() {
+    return DynamicFunction(static_function_id, dynamic_invocation);
   }
-  std::string get_static_node_id() {
-    // TODO: Really inefficient - make something better.
-    std::stringstream oss;
-    oss << static_method << "-" << dynamic_invocation << "-" << inst_id;
-    return oss.str();
+
+  DynamicInstruction get_dynamic_instruction() {
+    DynamicFunction dynfunc = get_dynamic_function();
+    return DynamicInstruction(dynfunc, static_inst_id);
+  }
+
+  DynamicVariable get_dynamic_variable() {
+    DynamicFunction dynfunc = get_dynamic_function();
+    return DynamicVariable(dynfunc, variable_id);
   }
 
   /* Increment/decrement. */
@@ -232,9 +271,7 @@ class ExecNode {
   }
 
   bool is_call_op() {
-    if (microop == LLVM_IR_Call)
-      return true;
-    return is_dma_op();
+    return (microop == LLVM_IR_Call);
   }
 
   bool is_index_op() {
@@ -266,8 +303,10 @@ class ExecNode {
 
   bool is_dma_load() { return microop == LLVM_IR_DMALoad; }
   bool is_dma_store() { return microop == LLVM_IR_DMAStore; }
-
-  bool is_dma_op() { return is_dma_load() || is_dma_store(); }
+  bool is_dma_fence() { return microop == LLVM_IR_DMAFence; }
+  bool is_dma_op() {
+    return is_dma_load() || is_dma_store() || is_dma_fence();
+  }
 
   bool is_int_mul_op() {
     switch (microop) {
@@ -464,12 +503,6 @@ class ExecNode {
   unsigned int node_id;
   /* Micro opcode. */
   uint8_t microop;
-  /* Name of the function this node belongs to. */
-  std::string static_method;
-  /* Name of the basic block this node belongs to. */
-  std::string basic_block_id;
-  /* Unique identifier of the static instruction that generated this node. */
-  std::string inst_id;
   /* This node came from the ith invocation of the parent function. */
   unsigned int dynamic_invocation;
   /* Corresponding line number from source code. */
@@ -506,6 +539,13 @@ class ExecNode {
    * this is NULL.
    */
   MemAccess* mem_access;
+
+  /* ID of the static instruction that generated this node. */
+  src_id_t static_inst_id;
+  /* ID of the function this node belongs to. */
+  src_id_t static_function_id;
+  /* ID of the variable this node refers to. */
+  src_id_t variable_id;
 
  private:
   /* True if the node has been assigned a vertex, false otherwise. */

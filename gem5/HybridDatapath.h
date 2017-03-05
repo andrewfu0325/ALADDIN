@@ -126,8 +126,6 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
                                  float* avg_dynamic,
                                  float* avg_leak);
   void computeCactiResults();
-  void getMemoryBlocks(std::vector<std::string>& names);
-  void getRegisterBlocks(std::vector<std::string>& names);
 
  protected:
 #ifdef USE_DB
@@ -187,6 +185,12 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
    * functions.
    */
   bool handleCacheMemoryOp(ExecNode* node);
+
+  /* Prints the ids of all nodes currently on the executing queue.
+   *
+   * Useful for debugging deadlocks.
+   */
+  void printExecutingQueue();
 
   /* Delete all memory queue entries that have returned. */
   void retireReturnedMemQEntries();
@@ -297,7 +301,8 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
 
   /* Hash table to track DMA accesses. Indexed by the base address of DMA
    * accesses, and mapped to the corresponding node id for that DMA request. */
-  std::unordered_map<Addr, unsigned> dmaIssueQueue;
+  // std::unordered_map<Addr, unsigned> dmaIssueQueue;
+  std::set<unsigned> dmaIssueQueue;
 
   // This queue stores the DMA events that are waiting for their setup latency
   // to elapse before they can be issued, along with their setup latencies.

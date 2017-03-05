@@ -13,5 +13,6 @@ ${gem5_dir}/build/X86/gem5.opt \
   --sys-clock=1GHz \
   --cpu-type=timing \
   --caches \
+  --cacheline_size=32 \
   --accel_cfg_file=${cfg_home}/gem5.cfg \
   > stdout.gz

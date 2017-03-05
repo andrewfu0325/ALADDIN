@@ -20,6 +20,7 @@
 #include "aladdin/common/DatabaseDeps.h"
 #include "aladdin/common/ExecNode.h"
 #include "aladdin/common/ScratchpadDatapath.h"
+#include "aladdin/common/DynamicEntity.h"
 #include "debug/Aladdin.hh"
 #include "debug/HybridDatapath.hh"
 #include "debug/HybridDatapathVerbose.hh"
@@ -36,7 +37,7 @@ std::map<uint64_t, uint64_t> ReqLatency;
 
 HybridDatapath::HybridDatapath(const HybridDatapathParams* params)
     : ScratchpadDatapath(
-          params->benchName, params->traceFileName, params->configFileName),
+          params->outputPrefix, params->traceFileName, params->configFileName),
       Gem5Datapath(params,
                    params->acceleratorId,
                    params->executeStandalone,
@@ -213,9 +214,18 @@ void HybridDatapath::delayedDmaIssue() {
   // In the typical case, after all DMA nodes have exited the waiting queue, we
   // can issue them all at once. No need to wait anymore.
   if (!pipelinedDma && dmaWaitingQueue.empty()) {
-    for (auto it = dmaIssueQueue.begin(); it != dmaIssueQueue.end(); it++)
-      issueDmaRequest(it->second);
+    for (auto it = dmaIssueQueue.begin(); it != dmaIssueQueue.end();) {
+      issueDmaRequest(*it);
+      dmaIssueQueue.erase(it++);
+    }
   }
+}
+
+void HybridDatapath::printExecutingQueue() {
+  std::cout << "Executing queue contents:\n";
+  for (auto it = executingQueue.begin(); it != executingQueue.end(); it++)
+    std::cout << (*it)->get_node_id() << ", ";
+  std::cout << std::endl;
 }
 
 void HybridDatapath::stepExecutingQueue() {
@@ -297,6 +307,7 @@ bool HybridDatapath::step() {
   else
     cycles_since_last_node = 0;
   if (cycles_since_last_node > deadlock_threshold) {
+    printExecutingQueue();
     exitSimLoop("Deadlock detected!");
     return false;
   }
@@ -309,7 +320,7 @@ bool HybridDatapath::step() {
     dumpStats();
     double TotLatency = 0;
     for(auto it : ReqLatency) {
-    //    printf("Req: %#x: %ld\n", it.first, it.second);
+        printf("Req: %#x: %ld\n", it.first, it.second);
         TotLatency += (double)it.second;
     }
     printf("Num of DMA Req: %d\n", NumDMAReq);
@@ -389,6 +400,9 @@ bool HybridDatapath::handleSpadMemoryOp(ExecNode* node) {
 }
 
 bool HybridDatapath::handleDmaMemoryOp(ExecNode* node) {
+  if (node->is_dma_fence())
+    return true;
+
   MemAccessStatus status = Invalid;
   unsigned node_id = node->get_node_id();
   if (inflight_dma_nodes.find(node_id) == inflight_dma_nodes.end())
@@ -467,7 +481,7 @@ bool HybridDatapath::handleCacheMemoryOp(ExecNode* node) {
     }
     if (!cache_queue.canIssue()) {
       DPRINTF(HybridDatapathVerbose,
-              "Unable to service cache request for %#x: " 
+              "Unable to service cache request for %#x: "
               "out of cache queue bandwidth.\n", vaddr);
       return false;
     }
@@ -528,12 +542,14 @@ void HybridDatapath::issueDmaRequest(unsigned node_id) {
   markNodeStarted(node);
   bool isLoad = node->is_dma_load();
   bool isDRAM = dmaFetchFromDRAM;
-  MemAccess* mem_access = node->get_mem_access();
+  DmaMemAccess* mem_access = node->get_dma_mem_access();
   Addr base_addr = mem_access->vaddr;
-  size_t offset = mem_access->offset;
   size_t size = mem_access->size;  // In bytes.
-  DPRINTF(
-      HybridDatapath, "issueDmaRequest for addr:%#x, size:%u\n", base_addr+offset, size);
+  Addr src_vaddr = (base_addr + mem_access->src_off) & ADDR_MASK;
+  Addr dst_vaddr = (base_addr + mem_access->dst_off) & ADDR_MASK;
+  DPRINTF(HybridDatapath,
+          "issueDmaRequest: src_addr: %#x, dst_addr: %#x, size: %u\n",
+          src_vaddr, dst_vaddr, size);
   /* Assigning the array label can (and probably should) be done in the
    * optimization pass instead of the scheduling pass. */
   auto part_it = getArrayConfigFromAddr(base_addr);
@@ -545,9 +561,10 @@ void HybridDatapath::issueDmaRequest(unsigned node_id) {
     incrementDmaScratchpadAccesses(array_label, size, isLoad);
   else
     registers.getRegister(array_label)->increment_dma_accesses(isLoad);
+
+  // Update the tracking structures.
   inflight_dma_nodes[node_id] = WaitingFromDma;
-  Addr vaddr = (base_addr + offset) & ADDR_MASK;
-  // TODO: This is a fixed approach for now
+  // Prepare the transaction.
   MemCmd::Command cmd = isLoad ? 
                         (isDRAM ? MemCmd::ReadFromDRAMReq : MemCmd::ReadReq) : 
                         MemCmd::WriteReq;
@@ -562,34 +579,31 @@ void HybridDatapath::issueDmaRequest(unsigned node_id) {
    * from the accelerator, which can't know physical addresses without a
    * translation.
    */
-  issueTLBRequestInvisibly(vaddr, size, isLoad, node_id);
-  Addr paddr = mem_access->paddr;
+  issueTLBRequestInvisibly(dst_vaddr, size, isLoad, node_id);
+  Addr dst_paddr = mem_access->paddr;
   uint8_t* data = new uint8_t[size];
   if (!isLoad) {
-    scratchpad->readData(array_label, vaddr, size, data);
+    scratchpad->readData(array_label, src_vaddr, size, data);
   }
 
   DmaEvent* dma_event = new DmaEvent(this, node_id);
   spadPort.dmaAction(
-      cmd, paddr, size, dma_event, data, 0, flags);
+      cmd, dst_paddr, size, dma_event, data, 0, flags);
 }
 
 /* Mark the DMA request node as having completed. */
 void HybridDatapath::completeDmaRequest(unsigned node_id) {
-  MemAccess* mem_access = exec_nodes[node_id]->get_mem_access();
-  Addr vaddr = (mem_access->vaddr + mem_access->offset) & ADDR_MASK;
-  dmaIssueQueue.erase(vaddr);
-  DPRINTF(HybridDatapath,
-          "completeDmaRequest for addr:%#x \n",
-          vaddr);
+  assert(inflight_dma_nodes.find(node_id) != inflight_dma_nodes.end());
+  DPRINTF(HybridDatapath, "completeDmaRequest for node %d.\n", node_id);
   inflight_dma_nodes[node_id] = Returned;
 }
 
 void HybridDatapath::addDmaNodeToIssueQueue(unsigned node_id) {
+  assert(exec_nodes[node_id]->is_dma_op() &&
+         "Cannot add non-DMA node to DMA issue queue!");
   DPRINTF(HybridDatapath, "Adding DMA node %d to DMA issue queue.\n", node_id);
-  MemAccess* mem_access = exec_nodes[node_id]->get_mem_access();
-  Addr vaddr = (mem_access->vaddr + mem_access->offset) & ADDR_MASK;
-  dmaIssueQueue[vaddr] = node_id;
+  assert(dmaIssueQueue.find(node_id) == dmaIssueQueue.end());
+  dmaIssueQueue.insert(node_id);
 }
 
 void HybridDatapath::sendFinishedSignal() {
@@ -756,8 +770,8 @@ bool HybridDatapath::issueCacheRequest(Addr addr,
    * can predict memory behavior similar to how branch predictors work. We
    * don't have real PCs in aladdin so we'll just hash the unique id of the
    * node.  */
-  std::string unique_id = exec_nodes[node_id]->get_static_node_id();
-  Addr pc = static_cast<Addr>(std::hash<std::string>()(unique_id));
+  DynamicInstruction inst = exec_nodes[node_id]->get_dynamic_instruction();
+  Addr pc = static_cast<Addr>(std::hash<DynamicInstruction>()(inst));
   req = new Request(addr, size, flags, getCacheMasterId(), curTick(), pc);
   /* The context id and thread ids are needed to pass a few assert checks in
    * gem5, but they aren't actually required for the mechanics of the memory
@@ -849,16 +863,15 @@ bool HybridDatapath::SpadPort::recvTimingResp(PacketPtr pkt) {
   ExecNode * node = datapath->getNodeFromNodeId(node_id);
   assert(node != nullptr && "DMA node id is invalid!");
 
-  MemAccess* mem_access = node->get_mem_access();
-  Addr vaddr_base = (mem_access->vaddr + mem_access->offset) & ADDR_MASK;
-  assert(datapath->dmaIssueQueue[vaddr_base] == node_id &&
-         "Node id in packet and issue queue do not match!");
+  DmaMemAccess* mem_access = node->get_dma_mem_access();
+  Addr src_vaddr_base = (mem_access->vaddr + mem_access->src_off) & ADDR_MASK;
+  Addr dst_vaddr_base = (mem_access->vaddr + mem_access->dst_off) & ADDR_MASK;
 
   // This will compute the offset of THIS packet from the base address.
   Addr paddr = pkt->getAddr();
   Addr paddr_base = getPacketAddr(pkt);
   Addr pkt_offset =  paddr - paddr_base;
-  Addr vaddr = vaddr_base + pkt_offset;
+  Addr vaddr = (node->is_dma_load() ? dst_vaddr_base : src_vaddr_base) + pkt_offset;
 
   std::string array_label = node->get_array_label();
   unsigned size = pkt->req->getSize(); // in bytes
@@ -882,7 +895,6 @@ HybridDatapath::DmaEvent::DmaEvent(HybridDatapath* _dpath, unsigned _dma_node_id
     : Event(Default_Pri, AutoDelete), datapath(_dpath), dma_node_id(_dma_node_id) {}
 
 void HybridDatapath::DmaEvent::process() {
-  assert(!datapath->dmaIssueQueue.empty());
   datapath->completeDmaRequest(dma_node_id);
 }
 
@@ -1042,10 +1054,6 @@ void HybridDatapath::getAverageCacheQueuePower(unsigned int cycles,
 double HybridDatapath::getTotalMemArea() {
   return scratchpad->getTotalArea() + cache_area;
 }
-
-void HybridDatapath::getMemoryBlocks(std::vector<std::string>& names) {}
-
-void HybridDatapath::getRegisterBlocks(std::vector<std::string>& names) {}
 
 Addr HybridDatapath::getBaseAddress(std::string label) {
   return (Addr)BaseDatapath::getBaseAddress(label);
