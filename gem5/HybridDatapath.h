@@ -106,6 +106,7 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
    * reset to its original state while the miss is being processed.
    */
   void completeTLBRequest(PacketPtr pkt, bool was_miss);
+  void completeTLBRequestForDMA(PacketPtr pkt);
 
   // Compute power and area of the caches.
   virtual double getTotalMemArea();
@@ -127,12 +128,19 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
                                  float* avg_leak);
   void computeCactiResults();
 
+  friend class SpadPort;
+
  protected:
 #ifdef USE_DB
   int writeConfiguration(sql::Connection* con);
 #endif
 
  private:
+  unsigned dma_load_cycles;
+  unsigned dma_store_cycles;
+  unsigned compute_cycles;
+  unsigned memory_cycles;
+  unsigned overlap_cycles;
   // typedef uint32_t FlagsType;
 
   /* All possible types of memory operations supported by Aladdin. */
@@ -197,6 +205,7 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
 
   // DMA access functions.
   void delayedDmaIssue();  // Used to postpone a call to issueDmaRequest().
+  void translateDma(); // Translate DMA packets
   void issueDmaRequest(unsigned node_id);
   void completeDmaRequest(unsigned node_id);
   void addDmaNodeToIssueQueue(unsigned node_id);
@@ -207,7 +216,7 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
   // Virtual address translation.
   bool issueTLBRequestTiming(Addr addr, unsigned size, bool isLoad, unsigned node_id);
   bool issueTLBRequestInvisibly(Addr addr, unsigned size, bool isLoad, unsigned node_id);
-  PacketPtr createTLBRequestPacket(Addr addr, unsigned size, bool isLoad, unsigned node_id);
+  PacketPtr createTLBRequestPacket(Addr addr, unsigned size, bool isLoad, unsigned node_id, unsigned channel_idx = 0, DmaPort::DmaReqState *dmaReqState = nullptr);
 
   // Cache access functions.
   bool issueCacheRequest(Addr addr,
@@ -308,6 +317,15 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
   // to elapse before they can be issued, along with their setup latencies.
   std::deque<std::pair<unsigned, Tick>> dmaWaitingQueue;
 
+  // This queue stores the DMA packet with to-be-translated virtual address
+  std::deque<PacketPtr> dmaVaddrPktQueue;
+
+  bool dmaInRetry;
+  unsigned maxDmaReq;
+  unsigned outstandingDmaReq;
+
+  System *sys;
+
   // Number of cycles required for the CPU to initiate a DMA transfer.
   unsigned dmaSetupOverhead;
 
@@ -380,6 +398,8 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
   EventWrapper<HybridDatapath, &HybridDatapath::eventStep> tickEvent;
   // Delayed DMA issue
   EventWrapper<HybridDatapath, &HybridDatapath::delayedDmaIssue> delayedDmaEvent;
+  /** Event used to schedule a future translation from the VaddrPktQueue. */
+  EventWrapper<HybridDatapath, &HybridDatapath::translateDma> translateDmaEvent;
 
   // Number of executed nodes as of the last event trigger.
   // This is required for deadlock detection.
@@ -390,8 +410,9 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
 
   // Enable DMA fetchs from DRAM
   bool dmaFetchFromDRAM;
-  // Sweep Testing
-  unsigned numOnCacheData;
+
+  // Enable perfect translation
+  bool perfectTranslation;
 };
 
 #endif

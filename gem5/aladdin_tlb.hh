@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/statistics.hh"
+#include "dev/dma_device.hh"
 #include "mem/mem_object.hh"
 #include "mem/request.hh"
 
@@ -137,7 +138,7 @@ class AladdinTLB {
   class deHitQueueEvent : public Event {
    public:
     /*Constructs a deHitQueueEvent*/
-    deHitQueueEvent(AladdinTLB* _tlb);
+    deHitQueueEvent(AladdinTLB* _tlb, bool _isDma);
     /*Processes the event*/
     void process();
     /*Returns the description of this event*/
@@ -148,12 +149,13 @@ class AladdinTLB {
    private:
     /* The pointer the to AladdinTLB unit*/
     AladdinTLB* tlb;
+    bool isDma;
   };
 
   class outStandingWalkReturnEvent : public Event {
    public:
     /*Constructs a outStandingWalkReturnEvent*/
-    outStandingWalkReturnEvent(AladdinTLB* _tlb);
+    outStandingWalkReturnEvent(AladdinTLB* _tlb, bool _isDma, unsigned _pageBytes);
     /*Processes the event*/
     void process();
     /*Returns the description of this event*/
@@ -164,6 +166,8 @@ class AladdinTLB {
    private:
     /* The pointer to the AladdinTLB unit*/
     AladdinTLB* tlb;
+    bool isDma;
+    unsigned pageBytes;
   };
 
   std::deque<PacketPtr> hitQueue;
@@ -249,7 +253,7 @@ class AladdinTLB {
   }
 
   /* Perform a TLB translation with timing. */
-  bool translateTiming(PacketPtr pkt);
+  bool translateTiming(PacketPtr pkt, bool isDma = false);
 
   /* Perform a TLB translation invisibly.
    *
@@ -279,6 +283,15 @@ class AladdinTLB {
    public:
     TLBSenderState(unsigned _node_id) : node_id(_node_id) {}
     unsigned node_id;
+  };
+
+  class TLBSenderStateForDma : public Packet::SenderState {
+   public:
+    TLBSenderStateForDma(unsigned _node_id, unsigned _channel_idx, DmaPort::DmaReqState *_dmaReqState) 
+        : node_id(_node_id), channel_idx(_channel_idx), dmaReqState(_dmaReqState) {}
+    unsigned node_id;
+    unsigned channel_idx;
+    DmaPort::DmaReqState *dmaReqState;
   };
 
   /* Number of TLB translation requests in the current cycle. */

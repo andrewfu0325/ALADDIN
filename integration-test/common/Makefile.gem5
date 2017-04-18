@@ -10,15 +10,15 @@ GEM5_SRCS = aladdin_sys_connection.cpp aladdin_sys_constants.cpp
 GEM5_FULL_SRCS = $(GEM5_SRCS:%=$(ALADDIN_HOME)/gem5/%)
 
 # For the MachSuite harness and support system.
-CFLAGS = -O3 -Wall -Wno-unused-label -I../../common
+CFLAGS = -Wall -Wno-unused-label -I../../common
 
 # -mno-sse
-GEM5_CFLAGS = -static -O3 -mno-80387 -msoft-float \
+GEM5_CFLAGS = -O3 -static -mno-80387 -msoft-float \
               -march=nocona -msse -mfpmath=sse \
-              -fno-exceptions -fno-inline -std=c11
+              -fno-exceptions -fno-inline -std=c11  
 
-INCLUDES += -I$(ALADDIN_HOME)/gem5
-LFLAGS = -lm
+INCLUDES += -I$(ALADDIN_HOME)/gem5 -I$(ALADDIN_HOME)/../../util/m5
+LFLAGS = -lm -lpthread ../../common/m5op_x86.S
 BMARK = $(ACCEL_NAME)
 
 # Builds both standalone CPU version and the HW accelerated version.
@@ -28,6 +28,8 @@ gem5: gem5-cpu gem5-accel
 gem5-cpu: $(SRCS) $(GEM5_FULL_SRCS)
 	@echo Building benchmark $(BMARK) for gem5.
 	@$(CC) $(GEM5_CFLAGS) $(CFLAGS) $(GEM5_FULL_SRCS) $(SRCS) $(INCLUDES) -o $(BMARK)-cpu-only $(LFLAGS)
+	@$(CC) $(GEM5_CFLAGS) $(CFLAGS) $(GEM5_FULL_SRCS) dummy_traffic.c $(INCLUDES) -o dummy_traffic $(LFLAGS)
+	@$(CC) $(GEM5_CFLAGS) $(CFLAGS) $(GEM5_FULL_SRCS) matrix_mult.c $(INCLUDES) -o matrix_mult $(LFLAGS)
 
 # Builds the gem5 version with HW acceleration turned on.
 gem5-accel: $(SRCS) $(GEM5_FULL_SRCS)

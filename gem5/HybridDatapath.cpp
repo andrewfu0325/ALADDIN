@@ -5,6 +5,7 @@
 #include <sstream>
 #include <string>
 
+#include "base/chunk_generator.hh"
 #include "base/flags.hh"
 #include "base/trace.hh"
 #include "base/types.hh"
@@ -36,7 +37,11 @@ std::map<uint64_t, uint64_t> ReqLatency;
 
 
 HybridDatapath::HybridDatapath(const HybridDatapathParams* params)
-    : ScratchpadDatapath(
+    : sys(params->system),
+      maxDmaReq(params->maxDmaRequests),
+      outstandingDmaReq(0),
+      dmaInRetry(false),
+      ScratchpadDatapath(
           params->outputPrefix, params->traceFileName, params->configFileName),
       Gem5Datapath(params,
                    params->acceleratorId,
@@ -73,7 +78,16 @@ HybridDatapath::HybridDatapath(const HybridDatapathParams* params)
       pipelinedDma(params->pipelinedDma),
       ignoreCacheFlush(params->ignoreCacheFlush),
       dmaFetchFromDRAM(params->dmaFetchFromDRAM),
-      tickEvent(this), delayedDmaEvent(this), executedNodesLastTrigger(0) {
+      perfectTranslation(params->isPerfectTranslation),
+      tickEvent(this), delayedDmaEvent(this), translateDmaEvent(this),
+      executedNodesLastTrigger(0) {
+
+  dma_load_cycles = 0;
+  dma_store_cycles = 0;
+  compute_cycles = 0;
+  memory_cycles = 0;
+  overlap_cycles = 0;
+
   BaseDatapath::use_db = params->useDb;
   BaseDatapath::experiment_name = params->experimentName;
 #ifdef USE_DB
@@ -221,6 +235,30 @@ void HybridDatapath::delayedDmaIssue() {
   }
 }
 
+void HybridDatapath::translateDma() {
+    assert(dmaVaddrPktQueue.size() > 0 && "DMA Translating Queue should not be empty!\n")  ;
+    assert(sys->isTimingMode() && "IOMMU only supports timing mode\n");
+    // if we are either waiting for a retry or are still waiting
+    // after sending the last packet, then do not proceed
+    // or number of outstanding requests > max requests
+    if (dmaInRetry || translateDmaEvent.scheduled() ) {
+        DPRINTF(HybridDatapath, "Can't send immediately, waiting to send\n");
+        return;
+    }
+    if (outstandingDmaReq >= maxDmaReq) {
+        this->schedule(translateDmaEvent, this->clockEdge(Cycles(1)));
+        DPRINTF(HybridDatapath, "Too many DMA outstanding requests, try again next cycle...\n");
+        return;
+    }
+    outstandingDmaReq++;
+    PacketPtr data_pkt = dmaVaddrPktQueue.front();
+    dmaVaddrPktQueue.pop_front();
+    dtb.translateTiming(data_pkt, true);
+    if(dmaVaddrPktQueue.size() > 0) {
+      this->schedule(translateDmaEvent, this->clockEdge(Cycles(1)));
+    }
+}
+
 void HybridDatapath::printExecutingQueue() {
   std::cout << "Executing queue contents:\n";
   for (auto it = executingQueue.begin(); it != executingQueue.end(); it++)
@@ -228,9 +266,17 @@ void HybridDatapath::printExecutingQueue() {
   std::cout << std::endl;
 }
 
+typedef enum{
+  DMA_LOAD = 0x0001,
+  DMA_STORE = 0x0010,
+  COMPUTE = 0x0100,
+  MEMORY_OP = 0x1000
+}Operation_t;
+
 void HybridDatapath::stepExecutingQueue() {
   auto it = executingQueue.begin();
   int index = 0;
+  int op = 0x000;
   while (it != executingQueue.end()) {
     ExecNode* node = *it;
     bool op_satisfied = false;
@@ -238,22 +284,27 @@ void HybridDatapath::stepExecutingQueue() {
       MemoryOpType type = getMemoryOpType(node);
       switch (type) {
         case Register:
+          op |= MEMORY_OP;
           op_satisfied = handleRegisterMemoryOp(node);
           break;
         case Scratchpad:
+          op |= MEMORY_OP;
           op_satisfied = handleSpadMemoryOp(node);
           break;
         case Cache:
+          op |= MEMORY_OP;
           op_satisfied = handleCacheMemoryOp(node);
           break;
         case Dma:
           op_satisfied = handleDmaMemoryOp(node);
+          op |= (node->is_dma_load() ? DMA_LOAD : DMA_STORE);
           break;
       }
       if (op_satisfied) {
         markNodeCompleted(it, index);
       }
     } else if (node->is_multicycle_op()) {
+      op |= COMPUTE;
       unsigned node_id = node->get_node_id();
       if (inflight_multicycle_nodes.find(node_id) ==
           inflight_multicycle_nodes.end()) {
@@ -271,6 +322,7 @@ void HybridDatapath::stepExecutingQueue() {
       }
     } else {
       // Not a memory/fp operation node, so it can be completed in one cycle.
+      op |= COMPUTE;
       markNodeStarted(node);
       markNodeCompleted(it, index);
       op_satisfied = true;
@@ -279,6 +331,17 @@ void HybridDatapath::stepExecutingQueue() {
       ++it;
       ++index;
     }
+  }
+  if (op == DMA_LOAD) {
+    dma_load_cycles++; 
+  } else if (op == DMA_STORE) {
+    dma_store_cycles++;
+  } else if (op == COMPUTE) {
+    compute_cycles++;
+  } else if (op == MEMORY_OP) {
+    memory_cycles++;
+  } else {
+    overlap_cycles++;
   }
 }
 
@@ -308,6 +371,10 @@ bool HybridDatapath::step() {
     cycles_since_last_node = 0;
   if (cycles_since_last_node > deadlock_threshold) {
     printExecutingQueue();
+    DPRINTF(Aladdin,
+            "[CYCLES]:%d. cycles_since_last_node:%d",
+            num_cycles,
+            cycles_since_last_node);
     exitSimLoop("Deadlock detected!");
     return false;
   }
@@ -320,9 +387,14 @@ bool HybridDatapath::step() {
     dumpStats();
     double TotLatency = 0;
     for(auto it : ReqLatency) {
-        printf("Req: %#x: %ld\n", it.first, it.second);
+//        printf("Req: %#x: %ld\n", it.first, it.second);
         TotLatency += (double)it.second;
     }
+    printf("DMA load cycles: %d\n", dma_load_cycles);
+    printf("DMA store cycles: %d\n", dma_store_cycles);
+    printf("Compute cycles: %d\n", compute_cycles);
+    printf("Memory cycles: %d\n", memory_cycles);
+    printf("Overlapped cycles: %d\n", overlap_cycles);
     printf("Num of DMA Req: %d\n", NumDMAReq);
     printf("Average DMA Request Latency: %lf\n", TotLatency / (double)NumDMAReq);
     printf("DMA Read Hit: %d\n", DmaReadHit);
@@ -415,6 +487,7 @@ bool HybridDatapath::handleDmaMemoryOp(ExecNode* node) {
      * receiving buffer. In CPU mode, this should be handled by the CPU; in standalone
      * mode, we add extra latency to the DMA operation here.
      */
+
     size_t size = node->get_mem_access()->size;
     bool isLoad = node->is_dma_load();
     unsigned cache_delay_cycles = 0;
@@ -427,7 +500,9 @@ bool HybridDatapath::handleDmaMemoryOp(ExecNode* node) {
         cache_delay_cycles = cache_lines_affected * cacheLineInvalidateLatency;
     }
     dma_setup_cycles += cache_delay_cycles;
-    Tick delay = clockPeriod() * cache_delay_cycles;
+    dma_setup_cycles += dmaSetupOverhead;
+    //Tick delay = clockPeriod() * cache_delay_cycles;
+    Tick delay = clockPeriod() * dmaSetupOverhead;
     if (!delayedDmaEvent.scheduled()) {
       DPRINTF(HybridDatapath,
               "Scheduling DMA %s operation with node id %d with delay %lu\n",
@@ -581,14 +656,52 @@ void HybridDatapath::issueDmaRequest(unsigned node_id) {
    */
   issueTLBRequestInvisibly(dst_vaddr, size, isLoad, node_id);
   Addr dst_paddr = mem_access->paddr;
-  uint8_t* data = new uint8_t[size];
-  if (!isLoad) {
-    scratchpad->readData(array_label, src_vaddr, size, data);
-  }
 
   DmaEvent* dma_event = new DmaEvent(this, node_id);
-  spadPort.dmaAction(
-      cmd, dst_paddr, size, dma_event, data, 0, flags);
+
+  if(perfectTranslation) {
+    uint8_t* data = new uint8_t[size];
+    if (!isLoad) {
+      scratchpad->readData(array_label, src_vaddr, size, data);
+    }
+    spadPort.dmaAction(
+        cmd, dst_paddr, size, dma_event, data, 0, flags);
+  } else {
+    // one DMA request sender state for every action, that is then
+    // split into many requests and packets based on the block size,
+    // i.e. cache line size
+    DmaPort::DmaPort::DmaReqState *reqState = new DmaPort::DmaPort::DmaReqState(dma_event, size, dst_paddr, 0);
+    unsigned channel_idx = spadPort.addNewChannel(reqState);
+    /*for (ChunkGenerator gen(dst_paddr, size, cacheLineSize);
+         !gen.done(); gen.next()) {
+      uint8_t* data = new uint8_t[gen.size()];
+      if (!isLoad) {
+        scratchpad->readData(array_label, src_vaddr + gen.complete(), gen.size(), data);
+      }
+      spadPort.dmaReqOnChannel(
+          cmd, gen.addr(), gen.size(), data, 0, reqState, flags, channel_idx);
+      printf("DMA Phys Addr 0x%x size: %d\n", gen.addr(), gen.size());
+    }
+    //spadPort.sendDma();
+     */
+
+    // Get simulater virtual addresses for ChunckGenerator to generate aligned addresses 
+    PacketPtr trace_pkt = createTLBRequestPacket(dst_vaddr, size, isLoad, node_id);
+    auto result = dtb.translateTraceToSimVirtual(trace_pkt);
+
+    for (ChunkGenerator gen(result.first + result.second, size, cacheLineSize);
+         !gen.done(); gen.next()) {
+      uint8_t* data = new uint8_t[gen.size()];
+      if (!isLoad) {
+        scratchpad->readData(array_label, src_vaddr + gen.complete(), gen.size(), data);
+      }
+      PacketPtr data_pkt = createTLBRequestPacket(gen.addr(), gen.size(), isLoad, 
+                                                  node_id, channel_idx, reqState);
+      dmaVaddrPktQueue.push_back(data_pkt);
+      printf("DMA Virt Addr 0x%x size: %d\n", gen.addr(), gen.size());
+    }
+    translateDma();
+  }
 }
 
 /* Mark the DMA request node as having completed. */
@@ -694,7 +807,8 @@ bool HybridDatapath::issueTLBRequestInvisibly(
 }
 
 PacketPtr HybridDatapath::createTLBRequestPacket(
-    Addr addr, unsigned size, bool isLoad, unsigned node_id) {
+    Addr addr, unsigned size, bool isLoad, 
+    unsigned node_id, unsigned channel_idx, DmaPort::DmaReqState *dmaReqState) {
   Request* req = NULL;
   Flags<Packet::FlagsType> flags = 0;
   // Constructor for physical request only
@@ -711,9 +825,42 @@ PacketPtr HybridDatapath::createTLBRequestPacket(
   *translation = 0x0;  // Signifies no translation.
   data_pkt->dataStatic<Addr>(translation);
 
-  AladdinTLB::TLBSenderState* state = new AladdinTLB::TLBSenderState(node_id);
+  Packet::SenderState *state = nullptr;
+
+  if(dmaReqState == nullptr) {
+    state = (Packet::SenderState *)(new AladdinTLB::TLBSenderState(node_id));
+  } else {
+    state = (Packet::SenderState *)
+            (new AladdinTLB::TLBSenderStateForDma(node_id, channel_idx, dmaReqState));
+  }
   data_pkt->senderState = state;
   return data_pkt;
+}
+
+void HybridDatapath::completeTLBRequestForDMA(PacketPtr pkt) {
+  AladdinTLB::TLBSenderStateForDma* state =
+      dynamic_cast<AladdinTLB::TLBSenderStateForDma*>(pkt->senderState);
+  unsigned node_id = state->node_id;
+  ExecNode * node = getNodeFromNodeId(node_id);
+  std::string array_label = node->get_array_label();
+  DmaMemAccess* mem_access = node->get_dma_mem_access();
+  Addr base_addr = mem_access->vaddr;
+  Addr src_vaddr = (base_addr + mem_access->src_off) & ADDR_MASK;
+
+  // Marking the DMA packets as uncacheable ensures they are not snooped by
+  // caches.
+  Request::Flags flags = Request::UNCACHEABLE;
+
+  uint8_t *data = new uint8_t[pkt->getSize()];
+  if(pkt->cmd.isWrite()) {
+    scratchpad->readData(array_label, src_vaddr, pkt->getSize(), data);
+  }
+  
+  MemCmd::Command cmd = pkt->cmd.isRead()? MemCmd::ReadReq : MemCmd::WriteReq;
+
+  spadPort.dmaReqOnChannel(
+      cmd, *pkt->getPtr<Addr>(), pkt->getSize(), data, 0, state->dmaReqState, flags, state->channel_idx);
+  spadPort.sendDma();
 }
 
 void HybridDatapath::completeTLBRequest(PacketPtr pkt, bool was_miss) {
@@ -856,7 +1003,7 @@ void HybridDatapath::completeCacheRequest(PacketPtr pkt) {
 bool HybridDatapath::SpadPort::recvTimingResp(PacketPtr pkt) {
   // Get the DMA sender state to retrieve node id, so we can get the virtual
   // address (the packet address is possibly physical).
-  DmaEvent* event = dynamic_cast<DmaEvent*>(getPacketCompletionEvent(pkt));
+  DmaEvent* event = (DmaEvent*)(getPacketCompletionEvent(pkt));
   assert(event != nullptr && "Packet completion event is not a DmaEvent object!");
 
   unsigned node_id = event->get_node_id();
@@ -888,6 +1035,12 @@ bool HybridDatapath::SpadPort::recvTimingResp(PacketPtr pkt) {
 
     datapath->scratchpad->writeData(array_label, vaddr, data, size);
   }
+
+  if(!datapath->perfectTranslation) {
+    assert(datapath->outstandingDmaReq > 0);
+    datapath->outstandingDmaReq--;
+  }
+
   return DmaPort::recvTimingResp(pkt);
 }
 

@@ -41,7 +41,7 @@ CPPFLAGS = -I$(ALADDIN_HOME) -I$(COMMON_DIR) -D$(MODE)
 
 ifneq ($(DMA_MODE),)
 	ALL_SRCS += $(ALADDIN_HOME)/gem5/dma_interface.c
-	CPPFLAGS += -DDMA_MODE -I$(ALADDIN_HOME)/gem5
+	CPPFLAGS += -DDMA_MODE -I$(ALADDIN_HOME)/gem5 
 endif
 
 LLVM_OBJS = $(patsubst %.c, %-opt.llvm, $(ALL_SRCS))
@@ -60,7 +60,7 @@ full.s: full.llvm
 	llc -O0 -disable-fp-elim -filetype=asm -o $@ $<
 
 $(EXEC)-instrumented: full.s
-	$(CXX) -O0 -fno-inline -o $@ $< -lm -lz
+	$(CXX) -O0 -fno-inline -o $@ $< -lm -lz -lpthread
 
 %-opt.llvm: %.c labelmap
 	clang -g -O1 -S -fno-slp-vectorize -fno-vectorize -fno-unroll-loops \

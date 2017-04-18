@@ -649,6 +649,8 @@ void BaseDatapath::loopUnrolling() {
 
   if (iter_counts == 0 && unrolling_config.size() != 0) {
     std::cerr << "-------------------------------\n"
+              << "iter counts: " << iter_counts << std::endl
+              << "unrolling factors: " << unrolling_config.size() << std::endl
               << "Loop Unrolling was NOT applied.\n"
               << "Either loop labels or line numbers are incorrect, or the\n"
               << "loop unrolling factor is larger than the loop trip count.\n"
