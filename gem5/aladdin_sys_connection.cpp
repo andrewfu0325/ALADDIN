@@ -21,11 +21,21 @@ void invokeAcceleratorAndBlock(unsigned req_code) {
     ;
 }
 
-int* invokeAcceleratorAndReturn(unsigned req_code) {
-  int* finish_flag = (int*)malloc(sizeof(int));
+void invokeAcceleratorAndReturn(unsigned req_code, int volatile *finish_flag) {
   *finish_flag = NOT_COMPLETED;
   ioctl(ALADDIN_FD, req_code, finish_flag);
-  return finish_flag;
+}
+
+void regAccTaskDataForCache(unsigned req_code, void *addr, size_t size) {
+
+  // Create the mapping for L1 cache
+  aladdin_map_t mapping;
+  mapping.array_name = "ACC-Task Data";
+  mapping.addr = addr;
+  mapping.request_code = req_code;
+  mapping.size = size;
+
+  syscall(SYS_fcntl, ALADDIN_FD, REG_ACC_TASK_DATA, mapping);
 }
 
 void dumpGem5Stats(char* stats_desc) {

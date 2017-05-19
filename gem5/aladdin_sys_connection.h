@@ -56,7 +56,7 @@ void invokeAcceleratorAndBlock(unsigned req_code);
  *   A new pointer to a finish flag integer. The client code should delete this
  *     when it is finished with it.
  */
-int* invokeAcceleratorAndReturn(unsigned req_code);
+void invokeAcceleratorAndReturn(unsigned req_code, int volatile *finish_flag);
 
 /* Trigger gem5 to dump its stats and then resume simulation.
  *
@@ -94,6 +94,21 @@ void resetGem5Stats();
  */
 void mapArrayToAccelerator(unsigned req_code,
                            const char* array_name,
+                           void* addr,
+                           size_t size);
+
+/* Register the virtual address range of Acc-task data in L1 Cache
+
+ * Args:
+ *   req: Request code for the accelerator.
+ *   array_name: Dummy.
+ *   addr: Pointer to the Acc-task data in the virtual address space.
+ *   size: Size of the Acc-task data.
+ *
+ * Returns:
+ *   Nothing.
+ */
+void regAccTaskDataForCache(unsigned req_code,
                            void* addr,
                            size_t size);
 

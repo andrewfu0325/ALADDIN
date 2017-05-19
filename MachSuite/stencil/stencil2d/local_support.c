@@ -85,13 +85,15 @@ int check_data( void *vdata, void *vref ) {
   struct bench_args_t *data = (struct bench_args_t *)vdata;
   struct bench_args_t *ref = (struct bench_args_t *)vref;
   int has_errors = 0;
+  int error = 0;
   int row, col;
-  TYPE diff;
+  TYPE diff = 0;
 
-  for(row=0; row<row_size; row++) {
-    for(col=0; col<col_size; col++) {
+  for(row=0; row<row_size - 2; row++) {
+    for(col=0; col<col_size - 2; col++) {
       diff = data->sol[row*col_size + col] - ref->sol[row*col_size + col];
-      has_errors |= (diff<-EPSILON) || (EPSILON<diff);
+      error = (diff<-EPSILON) || (EPSILON<diff);
+      has_errors |= error;
     }
   }
 

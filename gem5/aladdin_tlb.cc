@@ -15,16 +15,17 @@ AladdinTLB::AladdinTLB(HybridDatapath* _datapath,
                        unsigned _assoc,
                        Cycles _hit_latency,
                        Cycles _miss_latency,
+                       Cycles _access_latency,
                        Addr _page_bytes,
                        unsigned _num_walks,
                        unsigned _bandwidth,
                        std::string _cacti_config,
                        std::string _accelerator_name)
     : datapath(_datapath), numEntries(_num_entries), assoc(_assoc),
-      hitLatency(_hit_latency), missLatency(_miss_latency),
+      hitLatency(_hit_latency), missLatency(_miss_latency), accessLatency(_access_latency),
       pageBytes(_page_bytes),
       numOutStandingWalks(_num_walks), numOccupiedMissQueueEntries(0),
-      cacti_cfg(_cacti_config), requests_this_cycle(0), bandwidth(_bandwidth) {
+      cacti_cfg(_cacti_config), requests_this_cycle(0), bandwidth(_bandwidth), tlb_hits(0), tlb_misses(0) {
   if (numEntries > 0)
     tlbMemory = new TLBMemory(_num_entries, _assoc, _page_bytes);
   else
@@ -43,6 +44,22 @@ void AladdinTLB::clear() {
 void AladdinTLB::resetCounters() {
   reads = 0;
   updates = 0;
+}
+
+AladdinTLB::accessTLBEvent::accessTLBEvent(AladdinTLB* _tlb)
+    : Event(Default_Pri, AutoDelete), tlb(_tlb){}
+
+void AladdinTLB::accessTLBEvent::process() {
+  DPRINTF(HybridDatapath, "Complete TLB access.\n");
+  tlb->requests_this_cycle--;
+}
+
+const char* AladdinTLB::accessTLBEvent::description() const {
+  return "TLB Access";
+}
+
+const std::string AladdinTLB::accessTLBEvent::name() const {
+  return tlb->name() + ".access_tlb_event";
 }
 
 AladdinTLB::deHitQueueEvent::deHitQueueEvent(AladdinTLB* _tlb, bool _isDma)
@@ -139,17 +156,31 @@ std::pair<Addr, Addr> AladdinTLB::translateTraceToSimVirtual(PacketPtr pkt) {
   } else {
     TLBSenderState* state = dynamic_cast<TLBSenderState*>(pkt->senderState);
     std::string array_name = datapath->getBaseAddressLabel(state->node_id);
-    Addr base_sim_vaddr = lookupVirtualAddr(array_name);
-    Addr base_trace_addr =
+    Addr cpu_base_sim_vaddr = lookupVirtualAddr(array_name);
+    Addr acc_base_trace_addr =
         static_cast<Addr>(datapath->getBaseAddress(array_name));
-    Addr trace_req_vaddr = pkt->req->getPaddr();
-    Addr array_offset = trace_req_vaddr - base_trace_addr;
-    vaddr = base_sim_vaddr + array_offset;
+    Addr acc_trace_req_vaddr = pkt->req->getPaddr();
+    Addr array_offset;
+    array_offset = acc_trace_req_vaddr - acc_base_trace_addr;
+    DPRINTF(HybridDatapath,
+            "Offset of trace acc address: %d\n", array_offset);
+
+    // This is prticularly used for separate-buffer DMA operation
+    ExecNode *node = datapath->exec_nodes[state->node_id];
+    if(node->is_dma_op()) {
+      DmaMemAccess* mem_access = node->get_dma_mem_access();
+      DPRINTF(HybridDatapath,
+              "Offset of trace cpu address: %d\n", node->is_dma_load()? mem_access->src_off : mem_access->dst_off);
+      array_offset += node->is_dma_load()? mem_access->src_off : mem_access->dst_off;
+    }
+    /////////////////////////////////////////////////////////////
+
+    vaddr = cpu_base_sim_vaddr + array_offset;
     DPRINTF(HybridDatapath,
             "Accessing array %s at node id %d with base address %#x.\n",
             array_name.c_str(),
             state->node_id,
-            base_sim_vaddr);
+            cpu_base_sim_vaddr);
     DPRINTF(HybridDatapath, "Translating vaddr %#x.\n", vaddr);
     page_offset = vaddr % pageBytes;
     vpn = vaddr - page_offset;
@@ -157,20 +188,25 @@ std::pair<Addr, Addr> AladdinTLB::translateTraceToSimVirtual(PacketPtr pkt) {
   return std::make_pair(vpn, page_offset);
 }
 
-bool AladdinTLB::translateInvisibly(PacketPtr pkt) {
-  Addr vpn, ppn, page_offset;
-  auto result = translateTraceToSimVirtual(pkt);
-  vpn = result.first;
-  page_offset = result.second;
+Addr AladdinTLB::translateInvisibly(Addr sim_vaddr) {
+//bool AladdinTLB::translateInvisibly(PacketPtr pkt) {
+  Addr vpn, ppn, page_offset, sim_paddr;
+//  auto result = translateTraceToSimVirtual(pkt);
+//  vpn = result.first;
+//  page_offset = result.second;
+  page_offset = sim_vaddr % pageBytes;
+  vpn = sim_vaddr - page_offset;
   if (!tlbMemory->lookup(vpn, ppn)) {
     if (infiniteBackupTLB.find(vpn) != infiniteBackupTLB.end())
       ppn = infiniteBackupTLB[vpn];
     else
       ppn = vpn;
   }
-  *(pkt->getPtr<Addr>()) = ppn + page_offset;
-  DPRINTF(HybridDatapath, "Translated vpn %#x -> ppn %#x.\n", vpn, ppn);
-  return true;
+  sim_paddr = ppn + page_offset;
+  return sim_paddr;
+//  *(pkt->getPtr<Addr>()) = ppn + page_offset;
+//  DPRINTF(HybridDatapath, "Translated vpn %#x -> ppn %#x.\n", vpn, ppn);
+//  return true;
 }
 
 bool AladdinTLB::translateTiming(PacketPtr pkt, bool isDma) {
@@ -187,43 +223,93 @@ bool AladdinTLB::translateTiming(PacketPtr pkt, bool isDma) {
     vpn = vaddr - page_offset;
   }
 
+  if (isDma) {
+    if(requests_this_cycle >= bandwidth) {
+      DPRINTF(HybridDatapath, "Out of TLB bandwidth. Wait for next cycle.\n");
+      return false;
+    }
+    accessTLBEvent *accessTLB = new accessTLBEvent(this);
+    datapath->schedule(accessTLB, datapath->clockEdge(accessLatency));
+    requests_this_cycle++;
+  }
+
+  TheISA::TLB *cpu_dtb = datapath->getCPUDTBPtr();
+
   reads++;  // Both TLB hits and misses perform a read.
   if (tlbMemory->lookup(vpn, ppn)) {
-    DPRINTF(HybridDatapath, "TLB hit. Phys addr %#x.\n", ppn + page_offset);
+    DPRINTF(HybridDatapath, "TLB hit(%s). Phys addr %#x.\n", 
+            pkt->cmd.isRead()?"load":"store", ppn + page_offset);
     hits++;
+    tlb_hits++;
     hitQueue.push_back(pkt);
     deHitQueueEvent* hq = new deHitQueueEvent(this, isDma);
     datapath->schedule(hq, datapath->clockEdge(hitLatency));
     // Due to the complexity of translating trace to virtual address, return
     // the complete address, not just the page number.
     *(pkt->getPtr<Addr>()) = ppn + page_offset;
+    datapath->outstandingDmaReq++;
     return true;
   } else {
-    // TLB miss! Let the TLB handle the walk, etc
-    DPRINTF(HybridDatapath, "TLB miss for addr %#x\n", vaddr);
+    AladdinTLB::TLBSenderStateForDma* state =
+      dynamic_cast<AladdinTLB::TLBSenderStateForDma*>(pkt->senderState);
 
-    if (missQueue.find(vpn) == missQueue.end()) {
-      if (numOutStandingWalks != 0 &&
-          outStandingWalks.size() >= numOutStandingWalks)
-        return false;
-      outStandingWalks.push_back(vpn);
-      outStandingWalkReturnEvent* mq = new outStandingWalkReturnEvent(this, isDma, pageBytes);
-      DPRINTF(HybridDatapath, "TLB Miss latency: %d\n", missLatency);
-      datapath->schedule(mq, datapath->clockEdge(missLatency));
-      numOccupiedMissQueueEntries++;
-      DPRINTF(HybridDatapath,
-              "Allocated TLB miss entry for addr %#x, page %#x\n",
-              vaddr,
-              vpn);
+
+    TheISA::TlbEntry *entry = cpu_dtb->lookup(vaddr); 
+
+    if(datapath->hostPageWalk && entry != nullptr) {
+     Addr paddr = entry->pageStart() + page_offset;
+      DPRINTF(HybridDatapath, "TLB hit(%s) in cpu's dtb. vaddr %#x ->paddr %#x\n", 
+              pkt->cmd.isRead()?"load":"store", vaddr, paddr);
+      hits++;
+      tlb_hits++;
+      hitQueue.push_back(pkt);
+      deHitQueueEvent* hq = new deHitQueueEvent(this, isDma);
+      datapath->schedule(hq, datapath->clockEdge((Cycles)(hitLatency * 8)));
+      // Due to the complexity of translating trace to virtual address, return
+      // the complete address, not just the page number.
+      *(pkt->getPtr<Addr>()) = paddr;
+      datapath->outstandingDmaReq++;
+      return true;
     } else {
-      DPRINTF(HybridDatapath,
-              "Collapsed into existing miss entry for page %#x\n",
-              vpn);
+      // TLB miss! Let the TLB handle the walk, etc
+      DPRINTF(HybridDatapath, "TLB miss(%s) for addr %#x\n", 
+              pkt->cmd.isRead()?"load":"store", vaddr);
+
+      if (missQueue.find(vpn) == missQueue.end()) {
+        if(state->trigger_page_walk_start == -1) {
+          state->trigger_page_walk_start = curTick() / 1000;
+        }
+        if (numOutStandingWalks != 0 &&
+            outStandingWalks.size() >= numOutStandingWalks) {
+          DPRINTF(HybridDatapath,
+                  "Too many outstanding page walk, wait for next cycle\n");
+          return false;
+        }
+        outStandingWalks.push_back(vpn);
+        outStandingWalkReturnEvent* mq = new outStandingWalkReturnEvent(this, isDma, pageBytes);
+        DPRINTF(HybridDatapath, "TLB Miss latency: %d\n", missLatency);
+        datapath->schedule(mq, datapath->clockEdge(missLatency));
+        numOccupiedMissQueueEntries++;
+        DPRINTF(HybridDatapath,
+                "Allocated TLB miss entry for addr %#x, page %#x\n",
+                vaddr,
+                vpn);
+
+        tlb_misses++;
+        misses++;
+        missQueue.insert({ vpn, pkt });
+        datapath->outstandingDmaReq++;
+        return true;
+      } else {
+        //tlb_misses++;
+        //misses++;
+        DPRINTF(HybridDatapath,
+                "Collapsed into existing miss entry for page %#x\n",
+                vpn);
+        return false; 
+      }
     }
-    misses++;
-    missQueue.insert({ vpn, pkt });
-    return true;
-  }
+  } 
 }
 
 void AladdinTLB::insert(Addr vpn, Addr ppn) {

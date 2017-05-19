@@ -35,7 +35,7 @@ int write_double_array(int fd, double *arr, int n);
 int write_section_header(int fd);
 
 ///// Per-benchmark files
-void run_benchmark( void *vargs );
+char *run_benchmark();
 void input_to_data(int fd, void *vdata);
 void data_to_input(int fd, void *vdata);
 void output_to_data(int fd, void *vdata);

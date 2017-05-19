@@ -28,8 +28,6 @@ gem5: gem5-cpu gem5-accel
 gem5-cpu: $(SRCS) $(GEM5_FULL_SRCS)
 	@echo Building benchmark $(BMARK) for gem5.
 	@$(CC) $(GEM5_CFLAGS) $(CFLAGS) $(GEM5_FULL_SRCS) $(SRCS) $(INCLUDES) -o $(BMARK)-cpu-only $(LFLAGS)
-	@$(CC) $(GEM5_CFLAGS) $(CFLAGS) $(GEM5_FULL_SRCS) dummy_traffic.c $(INCLUDES) -o dummy_traffic $(LFLAGS)
-	@$(CC) $(GEM5_CFLAGS) $(CFLAGS) $(GEM5_FULL_SRCS) matrix_mult.c $(INCLUDES) -o matrix_mult $(LFLAGS)
 
 # Builds the gem5 version with HW acceleration turned on.
 gem5-accel: $(SRCS) $(GEM5_FULL_SRCS)

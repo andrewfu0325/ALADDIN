@@ -7,7 +7,12 @@
 #include <unordered_map>
 #include <utility>
 
+/* Hard-coded the real ISA implementation 
+   to get tlb lookup function */
+#include "arch/x86/tlb.hh"
+///////////////////////////////
 #include "base/statistics.hh"
+#include "cpu/thread_context.hh"
 #include "dev/dma_device.hh"
 #include "mem/mem_object.hh"
 #include "mem/request.hh"
@@ -122,6 +127,7 @@ class AladdinTLB {
   unsigned assoc;
   Cycles hitLatency;
   Cycles missLatency;
+  Cycles accessLatency;
   Addr pageBytes;
   unsigned numOutStandingWalks;
   unsigned numOccupiedMissQueueEntries;
@@ -134,6 +140,22 @@ class AladdinTLB {
   float area;
 
   BaseTLBMemory* tlbMemory;
+
+  class accessTLBEvent : public Event {
+   public:
+    /*Constructs a deHitQueueEvent*/
+    accessTLBEvent(AladdinTLB* _tlb);
+    /*Processes the event*/
+    void process();
+    /*Returns the description of this event*/
+    const char* description() const;
+    /* Returns name of this event. */
+    virtual const std::string name() const;
+
+   private:
+    /* The pointer the to AladdinTLB unit*/
+    AladdinTLB* tlb;
+  };
 
   class deHitQueueEvent : public Event {
    public:
@@ -193,6 +215,7 @@ class AladdinTLB {
              unsigned _assoc,
              Cycles _hit_latency,
              Cycles _miss_latency,
+             Cycles _access_latency,
              Addr pageBytes,
              unsigned _num_walks,
              unsigned _bandwidth,
@@ -261,7 +284,8 @@ class AladdinTLB {
    * incrementing of statistics, no changes to TLB state. This is required
    * due to the current constraints of the DMA system.
    */
-  bool translateInvisibly(PacketPtr pkt);
+  //bool translateInvisibly(PacketPtr pkt);
+  Addr translateInvisibly(Addr sim_vaddr);
 
   /* Translate a trace virtual address to a simulated virtual address. */
   std::pair<Addr, Addr> translateTraceToSimVirtual(PacketPtr pkt);
@@ -287,11 +311,16 @@ class AladdinTLB {
 
   class TLBSenderStateForDma : public Packet::SenderState {
    public:
-    TLBSenderStateForDma(unsigned _node_id, unsigned _channel_idx, DmaPort::DmaReqState *_dmaReqState) 
-        : node_id(_node_id), channel_idx(_channel_idx), dmaReqState(_dmaReqState) {}
+    TLBSenderStateForDma(unsigned _node_id, unsigned _channel_idx, 
+                         DmaPort::DmaReqState *_dmaReqState, Addr _acc_taddr) 
+        : node_id(_node_id), channel_idx(_channel_idx), 
+          dmaReqState(_dmaReqState), acc_taddr(_acc_taddr), translation_start(-1), trigger_page_walk_start(-1) {}
     unsigned node_id;
     unsigned channel_idx;
     DmaPort::DmaReqState *dmaReqState;
+    Addr acc_taddr;
+    Tick translation_start;
+    Tick trigger_page_walk_start;
   };
 
   /* Number of TLB translation requests in the current cycle. */
@@ -305,6 +334,9 @@ class AladdinTLB {
   Stats::Scalar reads;
   Stats::Scalar updates;
   Stats::Formula hitRate;
+
+  unsigned tlb_hits;
+  unsigned tlb_misses;
 };
 
 #endif

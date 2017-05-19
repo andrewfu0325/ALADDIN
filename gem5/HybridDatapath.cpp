@@ -70,6 +70,7 @@ HybridDatapath::HybridDatapath(const HybridDatapathParams* params)
                          params->tlbAssoc,
                          params->tlbHitLatency,
                          params->tlbMissLatency,
+                         params->tlbAccessLatency,
                          params->tlbPageBytes,
                          params->numOutStandingWalks,
                          params->tlbBandwidth,
@@ -80,13 +81,22 @@ HybridDatapath::HybridDatapath(const HybridDatapathParams* params)
       dmaFetchFromDRAM(params->dmaFetchFromDRAM),
       perfectTranslation(params->isPerfectTranslation),
       tickEvent(this), delayedDmaEvent(this), translateDmaEvent(this),
-      executedNodesLastTrigger(0) {
+      executedNodesLastTrigger(0), availAccTask(2), hostPageWalk(params->hostPageWalk) {
+  
+
 
   dma_load_cycles = 0;
   dma_store_cycles = 0;
   compute_cycles = 0;
   memory_cycles = 0;
   overlap_cycles = 0;
+  dma_load_overlap_cycles = 0;
+  dma_store_overlap_cycles = 0;
+  dma_load_overlap_memory_cycles = 0;
+  dma_load_overlap_compute_cycles = 0;
+
+  total_translation_cycles = 0;
+  trigger_page_walk_cycles = 0;
 
   BaseDatapath::use_db = params->useDb;
   BaseDatapath::experiment_name = params->experimentName;
@@ -109,6 +119,7 @@ HybridDatapath::HybridDatapath(const HybridDatapathParams* params)
    */
   if (execute_standalone) {
     initializeDatapath(dmaSetupOverhead);
+    assert(0);
   }
 
   /* For the DMA model, compute the cost of a CPU cache flush in terms of
@@ -144,6 +155,7 @@ void HybridDatapath::resetCounters(bool flush_tlb) {
 void HybridDatapath::clearDatapath() { clearDatapath(false); }
 
 void HybridDatapath::initializeDatapath(int delay) {
+  cpu_dtb = system->getThreadContext(getThreadId())->getDTBPtr();
   buildDddg();
   globalOptimizationPass();
   prepareForScheduling();
@@ -247,15 +259,25 @@ void HybridDatapath::translateDma() {
     }
     if (outstandingDmaReq >= maxDmaReq) {
         this->schedule(translateDmaEvent, this->clockEdge(Cycles(1)));
-        DPRINTF(HybridDatapath, "Too many DMA outstanding requests, try again next cycle...\n");
+        //DPRINTF(HybridDatapath, "Too many DMA outstanding requests, try again next cycle...\n");
         return;
     }
-    outstandingDmaReq++;
     PacketPtr data_pkt = dmaVaddrPktQueue.front();
-    dmaVaddrPktQueue.pop_front();
-    dtb.translateTiming(data_pkt, true);
+    AladdinTLB::TLBSenderStateForDma* state =
+        dynamic_cast<AladdinTLB::TLBSenderStateForDma*>(data_pkt->senderState);
+    if(state->translation_start == -1) {
+      state->translation_start = curTick() / 1000;
+    }
+    if(dtb.translateTiming(data_pkt, true)) 
+      dmaVaddrPktQueue.pop_front();
+    else {
+      this->schedule(translateDmaEvent, this->clockEdge(Cycles(1)));
+      return;
+    }
+
     if(dmaVaddrPktQueue.size() > 0) {
       this->schedule(translateDmaEvent, this->clockEdge(Cycles(1)));
+      return;
     }
 }
 
@@ -277,6 +299,7 @@ void HybridDatapath::stepExecutingQueue() {
   auto it = executingQueue.begin();
   int index = 0;
   int op = 0x000;
+//  printExecutingQueue();
   while (it != executingQueue.end()) {
     ExecNode* node = *it;
     bool op_satisfied = false;
@@ -342,6 +365,17 @@ void HybridDatapath::stepExecutingQueue() {
     memory_cycles++;
   } else {
     overlap_cycles++;
+    if (op & DMA_LOAD) {
+      dma_load_overlap_cycles++;
+      if(op & COMPUTE) {
+        dma_load_overlap_compute_cycles++;
+      }
+      if(op & MEMORY_OP) {
+        dma_load_overlap_memory_cycles++;
+      }
+    }
+    if (op & DMA_STORE) 
+      dma_store_overlap_cycles++;
   }
 }
 
@@ -392,15 +426,33 @@ bool HybridDatapath::step() {
     }
     printf("DMA load cycles: %d\n", dma_load_cycles);
     printf("DMA store cycles: %d\n", dma_store_cycles);
+    printf("DMA load cycles(overlapped): %d\n", dma_load_overlap_cycles);
+    printf("Compute cycles(overlapped with DMA load): %d\n", dma_load_overlap_compute_cycles);
+    printf("Memory cycles(overlapped with DMA load): %d\n", dma_load_overlap_memory_cycles);
+    printf("DMA store cycles(overlapped): %d\n", dma_store_overlap_cycles);
     printf("Compute cycles: %d\n", compute_cycles);
     printf("Memory cycles: %d\n", memory_cycles);
     printf("Overlapped cycles: %d\n", overlap_cycles);
+    printf("Num of TLB hits: %d\n", dtb.tlb_hits);
+    printf("Num of TLB misses: %d\n", dtb.tlb_misses);
     printf("Num of DMA Req: %d\n", NumDMAReq);
+    printf("TLB Miss Cycles: %ld\n", trigger_page_walk_cycles);
+    printf("Translation Cycles: %ld\n", total_translation_cycles);
+    printf("Average TLB Miss Latency: %lf\n", (double)trigger_page_walk_cycles / (double)dtb.tlb_misses);
+    printf("Average Translation Latency: %lf\n", (double)total_translation_cycles / (double)NumDMAReq);
     printf("Average DMA Request Latency: %lf\n", TotLatency / (double)NumDMAReq);
     printf("DMA Read Hit: %d\n", DmaReadHit);
     printf("DMA Read Miss: %d\n", DmaReadMiss);
     printf("DMA Read Hit Rate: %f\n", (float)DmaReadHit / ((float)DmaReadHit + (float) DmaReadMiss));
     DPRINTF(Aladdin, "Accelerator completed.\n");
+    dma_load_cycles = 0;
+    dma_store_cycles = 0;
+    compute_cycles = 0;
+    memory_cycles = 0;
+    overlap_cycles = 0;
+    NumDMAReq = 0;
+    DmaReadHit = 0;
+    DmaReadMiss = 0;
     if (execute_standalone) {
       // If in standalone mode, we wait dmaSetupOverhead before the datapath
       // starts, but this cost must be added to this stat. For some reason,
@@ -475,13 +527,112 @@ bool HybridDatapath::handleDmaMemoryOp(ExecNode* node) {
   if (node->is_dma_fence())
     return true;
 
-  MemAccessStatus status = Invalid;
+//  MemAccessStatus status = UpdateAvail;
+  MemAccessStatus status = Initial;
   unsigned node_id = node->get_node_id();
   if (inflight_dma_nodes.find(node_id) == inflight_dma_nodes.end())
     inflight_dma_nodes[node_id] = status;
   else
     status = inflight_dma_nodes[node_id];
-  if (status == Invalid && inflight_dma_nodes.size() < maxInflightNodes) {
+  DmaMemAccess* mem_access = node->get_dma_mem_access();
+
+  if(status == Initial && inflight_dma_nodes.size() < maxInflightNodes) {
+    if (mem_access->avail_addr != 0) {
+      if(node->is_dma_load()) {
+        availAccTask--;
+      } else {
+        availAccTask++;
+      } 
+		  assert(availAccTask >= 0 && availAccTask <= 2);
+      inflight_dma_nodes[node_id] = UpdateAvail;
+    } else {
+      inflight_dma_nodes[node_id] = CheckEnable;
+    }
+    return false;
+  } else if (status == UpdateAvail) {
+    DPRINTF(HybridDatapath, "Available Acc Tasks: %d(%s)\n", availAccTask, node->is_dma_load()? "DMA_LOAD" : "DMA_STORE");
+		DPRINTF(HybridDatapath, "UpdateAvail: DMA node %d for %s\n", node_id, node->is_dma_load()? "DMA_LOAD" : "DMA_STORE");
+		DPRINTF(HybridDatapath, "Avail Address(Trace): %x\n", mem_access->avail_addr);
+		std::string avail_name("avail");
+		Addr base_trace_addr = static_cast<Addr>(getBaseAddress(avail_name));
+		Addr base_sim_vaddr = dtb.lookupVirtualAddr(avail_name);
+		Addr avail_vaddr = base_sim_vaddr + (mem_access->avail_addr - base_trace_addr);
+		DPRINTF(HybridDatapath, "Avail Address(Virtual): %x\n", avail_vaddr);
+		Addr avail_paddr = dtb.translateInvisibly(avail_vaddr);
+		DPRINTF(HybridDatapath, "Avail Address(Physical): %x\n", avail_paddr);
+
+		/* Send the avail signal to inform CPU */
+		Flags<Packet::FlagsType> flags = 0;
+		size_t size = 4;  // 32 bit integer.
+		uint8_t* data = new uint8_t[size];
+
+		assert(availAccTask >= 0 && availAccTask <= 2);
+		*(int*)data = availAccTask;
+
+		Request* req = new Request(avail_paddr, size, flags, getCacheMasterId());
+		req->setThreadContext(context_id, thread_id);  // Only needed for prefetching.
+		MemCmd::Command cmd = MemCmd::WriteReq;
+		PacketPtr pkt = new Packet(req, cmd);
+		pkt->dataStatic<uint8_t>(data);
+		DatapathSenderState* state = new DatapathSenderState(node_id, true, false, mem_access);
+		pkt->senderState = state;
+
+    if(isCacheBlocked == false && retryPkt == NULL) {
+			  if (!cachePort.sendTimingReq(pkt)) {
+			  assert(retryPkt == NULL);
+			  retryPkt = pkt;
+			  isCacheBlocked = true;
+			  DPRINTF(HybridDatapath, "Sending avail signal failed, retrying.\n");
+      } else {
+		    DPRINTF(HybridDatapath, "Sent DMA avail request.\n");
+	  	}
+	  	inflight_dma_nodes[node_id] = WaitingForAvailUpdated;
+		}
+    return false;
+  } else if (status == CheckEnable) {
+    DPRINTF(HybridDatapath, "CheckEnable: DMA node %d for %s\n", node_id, node->is_dma_load()? "DMA_LOAD" : "DMA_STORE");
+
+    if(mem_access->enable_addr != 0) {
+      assert(mem_access->cpu_sync == true);
+      assert(node->is_dma_load());
+      DPRINTF(HybridDatapath, "Enable Address(Trace): %x\n", mem_access->enable_addr);
+      std::string enable_name("enable");
+      Addr base_trace_addr = static_cast<Addr>(getBaseAddress(enable_name));
+      Addr base_sim_vaddr = dtb.lookupVirtualAddr(enable_name);
+      Addr enable_vaddr = base_sim_vaddr + (mem_access->enable_addr - base_trace_addr);
+      DPRINTF(HybridDatapath, "Enable Address(Virtual): %x\n", enable_vaddr);
+      Addr enable_paddr = dtb.translateInvisibly(enable_vaddr);
+      DPRINTF(HybridDatapath, "Enable Address(Physical): %x\n", enable_paddr);
+
+      /* Read the enable flag from CPU */
+      Flags<Packet::FlagsType> flags = 0;
+      size_t size = 4;  // 32 bit integer.
+      uint8_t* data = new uint8_t[size];
+      Request* req = new Request(enable_paddr, size, flags, getCacheMasterId());
+      req->setThreadContext(context_id, thread_id);  // Only needed for prefetching.
+      MemCmd::Command cmd = MemCmd::ReadReq;
+      PacketPtr pkt = new Packet(req, cmd);
+      pkt->dataStatic<uint8_t>(data);
+      DatapathSenderState* state = new DatapathSenderState(node_id, true, true, mem_access);
+      pkt->senderState = state;
+
+      if(isCacheBlocked == false && retryPkt == NULL) {
+        if (!cachePort.sendTimingReq(pkt)) {
+          assert(retryPkt == NULL);
+          retryPkt = pkt;
+          isCacheBlocked = true;
+          DPRINTF(HybridDatapath, "Requesting DMA enable signal failed, retrying.\n");
+        } else {
+          DPRINTF(HybridDatapath, "Sent DMA enable request.\n");
+        }
+        inflight_dma_nodes[node_id] = WaitingFromCPU;
+      }
+    } else {
+      inflight_dma_nodes[node_id] = Issue;
+    }
+    return false;
+  } else if (status == Issue) {
+
     /* A DMA load needs to be preceded by a cache flush of the buffer being sent,
      * while a DMA store needs to be preceded by a cache invalidate of the
      * receiving buffer. In CPU mode, this should be handled by the CPU; in standalone
@@ -520,7 +671,8 @@ bool HybridDatapath::handleDmaMemoryOp(ExecNode* node) {
     inflight_dma_nodes.erase(node_id);
     return true;  // DMA op completed.
   } else {
-    // Still waiting from the cache or for DMA setup to finish. Move on to the next node.
+    // 1. Waiting from CPU to prepare the DMA data
+    // 2. Still waiting from the cache or for DMA setup to finish. Move on to the next node.
     return false;
   }
 }
@@ -618,16 +770,18 @@ void HybridDatapath::issueDmaRequest(unsigned node_id) {
   bool isLoad = node->is_dma_load();
   bool isDRAM = dmaFetchFromDRAM;
   DmaMemAccess* mem_access = node->get_dma_mem_access();
-  Addr base_addr = mem_access->vaddr;
+//  Addr base_addr = mem_access->vaddr;
+  Addr acc_base_taddr = mem_access->vaddr;
   size_t size = mem_access->size;  // In bytes.
-  Addr src_vaddr = (base_addr + mem_access->src_off) & ADDR_MASK;
-  Addr dst_vaddr = (base_addr + mem_access->dst_off) & ADDR_MASK;
-  DPRINTF(HybridDatapath,
-          "issueDmaRequest: src_addr: %#x, dst_addr: %#x, size: %u\n",
-          src_vaddr, dst_vaddr, size);
+
+  // Addr src_taddr = (mem_access->src_taddr + mem_access->src_off) & ADDR_MASK;
+  // Addr dst_taddr = (mem_access->dst_taddr + mem_access->dst_off) & ADDR_MASK;
   /* Assigning the array label can (and probably should) be done in the
    * optimization pass instead of the scheduling pass. */
-  auto part_it = getArrayConfigFromAddr(base_addr);
+
+  DPRINTF(HybridDatapath,"ACC Base Addr(Trace):%x, size: %d\n", acc_base_taddr, size);
+  
+  auto part_it = getArrayConfigFromAddr(acc_base_taddr);
   MemoryType mtype = part_it->second.memory_type;
   assert(mtype == spad || mtype == reg);
   std::string array_label = part_it->first;
@@ -654,51 +808,46 @@ void HybridDatapath::issueDmaRequest(unsigned node_id) {
    * from the accelerator, which can't know physical addresses without a
    * translation.
    */
-  issueTLBRequestInvisibly(dst_vaddr, size, isLoad, node_id);
-  Addr dst_paddr = mem_access->paddr;
+
+//  Addr cpu_taddr = isLoad? src_taddr : dst_taddr;
+  Addr acc_taddr = acc_base_taddr + (isLoad? mem_access->dst_off : mem_access->src_off);
+
+  issueTLBRequestInvisibly(acc_taddr, size, isLoad, node_id);
+
+  DPRINTF(HybridDatapath,
+          "issueDmaRequest(%s): acc_taddr: %#x, size: %u\n",
+          isLoad?"Load":"Store", acc_taddr, size);
+
+  Addr cpu_paddr = mem_access->paddr;
 
   DmaEvent* dma_event = new DmaEvent(this, node_id);
 
   if(perfectTranslation) {
     uint8_t* data = new uint8_t[size];
     if (!isLoad) {
-      scratchpad->readData(array_label, src_vaddr, size, data);
+      scratchpad->readData(array_label, acc_taddr, size, data);
     }
     spadPort.dmaAction(
-        cmd, dst_paddr, size, dma_event, data, 0, flags);
+        cmd, cpu_paddr, size, dma_event, data, 0, flags);
   } else {
     // one DMA request sender state for every action, that is then
     // split into many requests and packets based on the block size,
     // i.e. cache line size
-    DmaPort::DmaPort::DmaReqState *reqState = new DmaPort::DmaPort::DmaReqState(dma_event, size, dst_paddr, 0);
+    DmaPort::DmaPort::DmaReqState *reqState = new DmaPort::DmaPort::DmaReqState(dma_event, size, cpu_paddr, 0);
     unsigned channel_idx = spadPort.addNewChannel(reqState);
-    /*for (ChunkGenerator gen(dst_paddr, size, cacheLineSize);
-         !gen.done(); gen.next()) {
-      uint8_t* data = new uint8_t[gen.size()];
-      if (!isLoad) {
-        scratchpad->readData(array_label, src_vaddr + gen.complete(), gen.size(), data);
-      }
-      spadPort.dmaReqOnChannel(
-          cmd, gen.addr(), gen.size(), data, 0, reqState, flags, channel_idx);
-      printf("DMA Phys Addr 0x%x size: %d\n", gen.addr(), gen.size());
-    }
-    //spadPort.sendDma();
-     */
 
     // Get simulater virtual addresses for ChunckGenerator to generate aligned addresses 
-    PacketPtr trace_pkt = createTLBRequestPacket(dst_vaddr, size, isLoad, node_id);
+    PacketPtr trace_pkt = createTLBRequestPacket(acc_taddr, size, isLoad, node_id);
     auto result = dtb.translateTraceToSimVirtual(trace_pkt);
-
-    for (ChunkGenerator gen(result.first + result.second, size, cacheLineSize);
+    auto cpu_vaddr = result.first + result.second;
+    DPRINTF(HybridDatapath, "%s(%s) Trace Virtual address: %x\n", isLoad?"dmaLoad":"dmaStore", array_label.c_str(), acc_taddr);
+    DPRINTF(HybridDatapath, "%s(%s) Sim Virtual address: %x\n", isLoad?"dmaLoad":"dmaStore", array_label.c_str(), cpu_vaddr);
+    for (ChunkGenerator gen(cpu_vaddr, size, cacheLineSize);
          !gen.done(); gen.next()) {
-      uint8_t* data = new uint8_t[gen.size()];
-      if (!isLoad) {
-        scratchpad->readData(array_label, src_vaddr + gen.complete(), gen.size(), data);
-      }
-      PacketPtr data_pkt = createTLBRequestPacket(gen.addr(), gen.size(), isLoad, 
-                                                  node_id, channel_idx, reqState);
+      PacketPtr data_pkt = createTLBRequestPacketForDma(gen.addr(), gen.size(), isLoad, 
+                                                  node_id, channel_idx, 
+                                                  reqState, acc_taddr + gen.complete());
       dmaVaddrPktQueue.push_back(data_pkt);
-      printf("DMA Virt Addr 0x%x size: %d\n", gen.addr(), gen.size());
     }
     translateDma();
   }
@@ -768,23 +917,43 @@ bool HybridDatapath::CachePort::recvTimingResp(PacketPtr pkt) {
   }
   DatapathSenderState* state =
       dynamic_cast<DatapathSenderState*>(pkt->senderState);
-  if (!state->is_ctrl_signal) {
-    datapath->completeCacheRequest(pkt);
-  } else {
+  if (state->is_ctrl_signal) {
     DPRINTF(HybridDatapath,
             "recvTimingResp for control signal access: %#x\n",
             pkt->getAddr());
+    /* Determine if this signal is triggered by a DMA operation */
+    if (state->mem_access != nullptr) {
+      if (state->mem_access->avail_addr != 0) {
+        state->mem_access->avail_addr = 0;
+        datapath->inflight_dma_nodes[state->node_id] = CheckEnable;
+      } else if (state->mem_access->enable_addr != 0) {
+        assert(state->is_cpu_sync == true);
+        assert(state->mem_access->cpu_sync == true);
+        if(*(pkt->getPtr<int>()) == 1) {
+          state->mem_access->cpu_sync = false;
+          state->mem_access->enable_addr = 0;
+          DPRINTF(HybridDatapath, "Enable signal for DMA node %d ready\n", state->node_id);
+          datapath->inflight_dma_nodes[state->node_id] = Issue;
+        } else {
+          state->mem_access->cpu_sync = true;
+          DPRINTF(HybridDatapath, "Enable signal for DMA node %d is not ready\n", state->node_id);
+          datapath->inflight_dma_nodes[state->node_id] = CheckEnable;
+        }
+      }
+    }
     delete state;
     delete pkt->req;
     delete pkt;
+  } else {
+    datapath->completeCacheRequest(pkt);
   }
   return true;
 }
 
 bool HybridDatapath::issueTLBRequestTiming(
-    Addr addr, unsigned size, bool isLoad, unsigned node_id) {
-  DPRINTF(HybridDatapath, "issueTLBRequestTiming for trace addr:%#x\n", addr);
-  PacketPtr data_pkt = createTLBRequestPacket(addr, size, isLoad, node_id);
+    Addr cpu_taddr, unsigned size, bool isLoad, unsigned node_id) {
+  DPRINTF(HybridDatapath, "issueTLBRequestTiming for trace addr:%#x\n", cpu_taddr);
+  PacketPtr data_pkt = createTLBRequestPacket(cpu_taddr, size, isLoad, node_id);
 
   // TLB access
   if (dtb.translateTiming(data_pkt))
@@ -797,22 +966,23 @@ bool HybridDatapath::issueTLBRequestTiming(
 }
 
 bool HybridDatapath::issueTLBRequestInvisibly(
-    Addr addr, unsigned size, bool isLoad, unsigned node_id) {
-  PacketPtr data_pkt = createTLBRequestPacket(addr, size, isLoad, node_id);
-  dtb.translateInvisibly(data_pkt);
+    Addr acc_taddr, unsigned size, bool isLoad, unsigned node_id) {
+  PacketPtr data_pkt = createTLBRequestPacket(acc_taddr, size, isLoad, node_id);
+  auto result = dtb.translateTraceToSimVirtual(data_pkt);
+  Addr cpu_paddr = dtb.translateInvisibly(result.first + result.second);
   // data_pkt now contains the translated address.
   ExecNode* node = exec_nodes[node_id];
-  node->get_mem_access()->paddr = *data_pkt->getPtr<Addr>();
+  //node->get_mem_access()->paddr = *data_pkt->getPtr<Addr>();
+  node->get_mem_access()->paddr = cpu_paddr;
   return true;
 }
 
 PacketPtr HybridDatapath::createTLBRequestPacket(
-    Addr addr, unsigned size, bool isLoad, 
-    unsigned node_id, unsigned channel_idx, DmaPort::DmaReqState *dmaReqState) {
+    Addr cpu_taddr, unsigned size, bool isLoad, unsigned node_id) {
   Request* req = NULL;
   Flags<Packet::FlagsType> flags = 0;
   // Constructor for physical request only
-  req = new Request(addr, size, flags, getCacheMasterId());
+  req = new Request(cpu_taddr, size, flags, getCacheMasterId());
 
   MemCmd command;
   if (isLoad)
@@ -827,12 +997,34 @@ PacketPtr HybridDatapath::createTLBRequestPacket(
 
   Packet::SenderState *state = nullptr;
 
-  if(dmaReqState == nullptr) {
-    state = (Packet::SenderState *)(new AladdinTLB::TLBSenderState(node_id));
-  } else {
-    state = (Packet::SenderState *)
-            (new AladdinTLB::TLBSenderStateForDma(node_id, channel_idx, dmaReqState));
-  }
+  state = (Packet::SenderState *)(new AladdinTLB::TLBSenderState(node_id));
+  data_pkt->senderState = state;
+  return data_pkt;
+}
+
+PacketPtr HybridDatapath::createTLBRequestPacketForDma(
+    Addr cpu_vaddr, unsigned size, bool isLoad, 
+    unsigned node_id, unsigned channel_idx, DmaPort::DmaReqState *dmaReqState, Addr acc_taddr) {
+  Request* req = NULL;
+  Flags<Packet::FlagsType> flags = 0;
+  // Constructor for physical request only
+  req = new Request(cpu_vaddr, size, flags, getCacheMasterId());
+
+  MemCmd command;
+  if (isLoad)
+    command = MemCmd::ReadReq;
+  else
+    command = MemCmd::WriteReq;
+  PacketPtr data_pkt = new Packet(req, command);
+
+  Addr* translation = new Addr;
+  *translation = 0x0;  // Signifies no translation.
+  data_pkt->dataStatic<Addr>(translation);
+
+  Packet::SenderState *state = nullptr;
+
+  state = (Packet::SenderState *)
+          (new AladdinTLB::TLBSenderStateForDma(node_id, channel_idx, dmaReqState, acc_taddr));
   data_pkt->senderState = state;
   return data_pkt;
 }
@@ -844,8 +1036,7 @@ void HybridDatapath::completeTLBRequestForDMA(PacketPtr pkt) {
   ExecNode * node = getNodeFromNodeId(node_id);
   std::string array_label = node->get_array_label();
   DmaMemAccess* mem_access = node->get_dma_mem_access();
-  Addr base_addr = mem_access->vaddr;
-  Addr src_vaddr = (base_addr + mem_access->src_off) & ADDR_MASK;
+  Addr acc_taddr = state->acc_taddr;
 
   // Marking the DMA packets as uncacheable ensures they are not snooped by
   // caches.
@@ -853,14 +1044,23 @@ void HybridDatapath::completeTLBRequestForDMA(PacketPtr pkt) {
 
   uint8_t *data = new uint8_t[pkt->getSize()];
   if(pkt->cmd.isWrite()) {
-    scratchpad->readData(array_label, src_vaddr, pkt->getSize(), data);
+    scratchpad->readData(array_label, acc_taddr, pkt->getSize(), data);
+  }
+
+  // Instrumentation on address translation
+  total_translation_cycles += (long long)(curTick() / 1000 - state->translation_start);
+  if(state->trigger_page_walk_start != -1) {
+    trigger_page_walk_cycles += (long long)(curTick() / 1000 - state->trigger_page_walk_start);
   }
   
   MemCmd::Command cmd = pkt->cmd.isRead()? MemCmd::ReadReq : MemCmd::WriteReq;
 
   spadPort.dmaReqOnChannel(
       cmd, *pkt->getPtr<Addr>(), pkt->getSize(), data, 0, state->dmaReqState, flags, state->channel_idx);
-  spadPort.sendDma();
+  if(!state->dmaReqState->isSent) {
+    state->dmaReqState->isSent = true;
+    spadPort.sendDma();
+  }
 }
 
 void HybridDatapath::completeTLBRequest(PacketPtr pkt, bool was_miss) {
@@ -1011,33 +1211,37 @@ bool HybridDatapath::SpadPort::recvTimingResp(PacketPtr pkt) {
   assert(node != nullptr && "DMA node id is invalid!");
 
   DmaMemAccess* mem_access = node->get_dma_mem_access();
-  Addr src_vaddr_base = (mem_access->vaddr + mem_access->src_off) & ADDR_MASK;
-  Addr dst_vaddr_base = (mem_access->vaddr + mem_access->dst_off) & ADDR_MASK;
+  Addr acc_taddr_base = mem_access->vaddr;
+//  Addr src_taddr_base = (mem_access->src_taddr + mem_access->src_off) & ADDR_MASK;
+//  Addr dst_taddr_base = (mem_access->dst_taddr + mem_access->dst_off) & ADDR_MASK;
 
   // This will compute the offset of THIS packet from the base address.
   Addr paddr = pkt->getAddr();
   Addr paddr_base = getPacketAddr(pkt);
   Addr pkt_offset =  paddr - paddr_base;
-  Addr vaddr = (node->is_dma_load() ? dst_vaddr_base : src_vaddr_base) + pkt_offset;
+  Addr acc_taddr = acc_taddr_base + 
+                   (node->is_dma_load() ? mem_access->dst_off : mem_access->src_off) + 
+                   pkt_offset;
 
   std::string array_label = node->get_array_label();
   unsigned size = pkt->req->getSize(); // in bytes
   DPRINTF(HybridDatapath,
-          "Receiving DMA response for node %d, address %#x with label %s and size %d.\n",
-          node_id, vaddr, array_label.c_str(), size);
+          "Receiving DMA response for node %d, Acc trace address %#x with label %s and size %d.\n",
+          node_id, acc_taddr, array_label.c_str(), size);
   if (datapath->ready_mode)
-    datapath->scratchpad->setReadyBitRange(array_label, vaddr, size);
+    datapath->scratchpad->setReadyBitRange(array_label, acc_taddr, size);
 
   // For dmaLoads, write the data into the scratchpad.
   if (node->is_dma_load()) {
     uint8_t* data = pkt->getPtr<uint8_t>();
     assert(data != nullptr && "Packet data is null!");
 
-    datapath->scratchpad->writeData(array_label, vaddr, data, size);
+    datapath->scratchpad->writeData(array_label, acc_taddr, data, size);
   }
 
   if(!datapath->perfectTranslation) {
     assert(datapath->outstandingDmaReq > 0);
+    assert(datapath->outstandingDmaReq <= datapath->maxDmaReq);
     datapath->outstandingDmaReq--;
   }
 

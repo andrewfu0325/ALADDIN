@@ -1,29 +1,119 @@
 #include "stencil.h"
+#include <assert.h>
+#include <fcntl.h>
 #include <string.h>
 
 #ifdef GEM5_HARNESS
 #include "gem5/gem5_harness.h"
+#include "gem5/aladdin_sys_constants.h"
 #endif
 
-int INPUT_SIZE = sizeof(struct bench_args_t);
+int INPUT_SIZE = sizeof(struct bench_args_t) * NUM_ACC_TASK;
 
 #define EPSILON (1.0e-6)
+#define CACHELINE_SIZE 64
 
-void run_benchmark( void *vargs ) {
+void input_to_data(int fd, void *vdata);
+void output_to_data(int fd, void *vdata);
+void data_to_output(int fd, void *vdata);
+int check_data( void *vdata, void *vref );
+
+char *run_benchmark() {
+  // Parse command line.
+  char *in_file;
+  in_file = "input.data";
+  // Load input data
+  int in_fd;
+  in_fd = open( in_file, O_RDONLY );
+  assert( in_fd>0 && "Couldn't open input data file");
+
+  void *vargs, *vinput;
+  posix_memalign((void**)&vargs, CACHELINE_SIZE, INPUT_SIZE);
+  posix_memalign((void**)&vinput, CACHELINE_SIZE, INPUT_SIZE);
+  assert(vinput!=NULL && vargs!=NULL && "Out of memory" );
+
+
+  input_to_data(in_fd, (void*)vargs);
+
+
   struct bench_args_t *args = (struct bench_args_t *)vargs;
+  struct bench_args_t *input = (struct bench_args_t *)vinput;
+
 #ifdef GEM5_HARNESS
+// Construct a mapping between Acc scratchpad and CPU memory buffer
+// This is used for trace address to sim-virtual address translation
   mapArrayToAccelerator(
-      MACHSUITE_STENCIL_2D, "orig", (void*)&args->orig, sizeof(args->orig));
+      MACHSUITE_STENCIL_2D, "orig", (void*)&args[0].orig, sizeof(struct bench_args_t) * NUM_ACC_TASK);
   mapArrayToAccelerator(
-      MACHSUITE_STENCIL_2D, "sol", (void*)&args->sol, sizeof(args->sol));
+      MACHSUITE_STENCIL_2D, "filter", (void*)&args[0].filter, sizeof(struct bench_args_t) * NUM_ACC_TASK);
   mapArrayToAccelerator(
-      MACHSUITE_STENCIL_2D, "filter", (void*)&args->filter,
-      sizeof(args->filter));
-  invokeAcceleratorAndBlock(MACHSUITE_STENCIL_2D);
-#else
-  stencil( args->orig, args->sol, args->filter );
+      MACHSUITE_STENCIL_2D, "sol", (void*)&args[0].sol, sizeof(struct bench_args_t) * NUM_ACC_TASK);
+  mapArrayToAccelerator(
+      MACHSUITE_STENCIL_2D, "enable", (void*)&enable, sizeof(enable));
+  mapArrayToAccelerator(
+      MACHSUITE_STENCIL_2D, "avail", (void*)&avail, sizeof(avail));
+
+  int volatile finish_flag = NOT_COMPLETED;
+  int orig_num = sizeof(args[0].orig) / sizeof(TYPE);
+  int sol_num = sizeof(args[0].sol) / sizeof(TYPE);
+  int filter_num = sizeof(args[0].filter) / sizeof(TYPE);
+
+  // Zero-out
+  // "it" starts from "1" instead of "0" is in order to generate getElementPtr in llvm trace
+  for(int it = 1; it < NUM_ACC_TASK + 1; it++) {
+    printf("Zero-out Task %d\n", it - 1);
+/*    for(int i = 0; i < orig_num; i++) {
+      args[it - 1].orig[i] = 0;
+      input[it - 1].orig[i] = i;
+    }
+    for(int i = 0; i < sol_num; i++) {
+      args[it - 1].sol[i] = 0;
+    }
+    for(int i = 0; i < filter_num; i++) {
+      args[it - 1].filter[i] = 0;
+      input[it - 1].filter[i] = i;
+    }*/
+  }
+
+//  regAccTaskDataForCache(MACHSUITE_STENCIL_2D, args, sizeof(args));
+  // Preparation
+  printf("Initialize the first Task %d\n", 0);
+  int it = 1;
+/*  for(int i = 0; i < orig_num; i++) {
+    args[it - 1].orig[i] = input[it - 1].orig[i];
+  }
+  for(int i = 0; i < filter_num; i++) {
+    args[it - 1].filter[i] = input[it - 1].filter[i];
+  }*/
+  enable[it] = 1;
+
+  invokeAcceleratorAndReturn(MACHSUITE_STENCIL_2D, &finish_flag);
+
+#ifdef GEM5_HARNESS
+  m5_work_begin(0,0);
 #endif
+  for(int it = 2; it < NUM_ACC_TASK + 1; it++) {
+    printf("Initialize Task %d\n", it - 1);
+/*    for(int i = 0; i < orig_num; i++) {
+      args[it - 1].orig[i] = input[it - 1].orig[i];
+    }
+    for(int i = 0; i < filter_num; i++) {
+      args[it - 1].filter[i] = input[it - 1].filter[i];
+    }*/
+    enable[it] = 1;
+  }
+#ifdef GEM5_HARNESS
+  m5_work_end(0,0);
+#endif
+
+  while(finish_flag == NOT_COMPLETED)
+    printf("ACC Avail: %d\n", avail[1]);
+#else
+  stencil(args, enable, avail);
+#endif
+  return vargs;
 }
+
 
 /* Input format:
 %% Section 1

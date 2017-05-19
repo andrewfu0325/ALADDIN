@@ -10,13 +10,19 @@
 
 // Current status of a memory access. Used for caches and DMA requests.
 enum MemAccessStatus {
+  Initial,
   Invalid,
+  Issue,
+  UpdateAvail,
+  CheckEnable,
   Retry,
   Translating,
   Translated,
+  WaitingFromCPU,
   WaitingFromCache,
   WaitingFromDma,
   WaitingForDmaSetup,
+  WaitingForAvailUpdated,
   Returned
 };
 

@@ -1,6 +1,7 @@
 KERN=stencil
 ALG=stencil2d
 
+BMARK_SPECIFIC_CFLAGS=-DDMA_INTERFACE_V4
 CFLAGS?=-O3 -Wall -Wno-unused-label
 
 SRCS=$(KERN).c local_support.c ../../common/support.c

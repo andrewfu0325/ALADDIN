@@ -2,22 +2,23 @@
         Aladdin Results        
 ===============================
 Running : ./outputs/stencil-stencil2d-gem5-accel
-Cycle : 37337 cycles
-Avg Power: 65.3878 mW
-Idle FU Cycles: 14196 cycles
-Avg FU Power: 49.162 mW
-Avg FU Dynamic Power: 28.6402 mW
-Avg FU leakage Power: 20.5217 mW
-Avg MEM Power: 16.2258 mW
-Avg MEM Dynamic Power: 3.59558 mW
-Avg MEM Leakage Power: 12.6303 mW
-Total Area: 2.45334e+06 uM^2
-FU Area: 1.66488e+06 uM^2
-MEM Area: 788451 uM^2
-Num of Multipliers (32-bit): 24
-Num of Adders (32-bit): 24
-Num of Shifters (32-bit): 13
-Num of Registers (32-bit): 7850
+Cycle : 24000 cycles
+Avg Power: 252.959 mW
+Idle FU Cycles: 15471 cycles
+Avg FU Power: 221.332 mW
+Avg FU Dynamic Power: 171.469 mW
+Avg FU leakage Power: 49.8632 mW
+Avg MEM Power: 31.6274 mW
+Avg MEM Dynamic Power: 10.1573 mW
+Avg MEM Leakage Power: 21.4701 mW
+Total Area: 5.50316e+06 uM^2
+FU Area: 4.07919e+06 uM^2
+MEM Area: 1.42398e+06 uM^2
+Num of Multipliers (32-bit): 367
+Num of Adders (32-bit): 192
+Num of Bit-wise Operators (32-bit): 1
+Num of Shifters (32-bit): 71
+Num of Registers (32-bit): 8762
 ===============================
         Aladdin Results        
 ===============================

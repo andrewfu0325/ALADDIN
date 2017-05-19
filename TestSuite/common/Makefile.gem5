@@ -16,7 +16,7 @@ ALL_SRCS = $(SRCS) ../../common/harness.c
 # -mno-sse
 GEM5_CFLAGS = -static -O3 -mno-80387 -msoft-float \
               -march=nocona -msse -mfpmath=sse \
-              -fno-exceptions -fno-inline -std=c11
+              -funroll-all-loops -fno-exceptions -fno-inline -std=c11
 
 INCLUDES += -I$(ALADDIN_HOME) -I$(ALADDIN_HOME)/../../util/m5
 LFLAGS = -lm ../../common/m5op_x86.S

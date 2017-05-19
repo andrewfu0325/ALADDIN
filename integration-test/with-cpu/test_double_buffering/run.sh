@@ -4,7 +4,7 @@ cfg_home=${ALADDIN_HOME}/integration-test/with-cpu/test_double_buffering
 gem5_dir=${ALADDIN_HOME}/../..
 
 ${gem5_dir}/build/X86_MOESI_CMP_directory/gem5.opt \
-  --debug-flags=HybridDatapath,Aladdin \
+  --debug-flags=HybridDatapath \
   --outdir=${cfg_home}/outputs \
   ${gem5_dir}/configs/aladdin/aladdin_se.py \
   --num-cpus=1 \

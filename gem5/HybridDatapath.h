@@ -11,6 +11,7 @@
 #include "base/flags.hh"
 #include "base/trace.hh"
 #include "base/types.hh"
+#include "cpu/thread_context.hh"
 #include "dev/dma_device.hh"
 #include "mem/mem_object.hh"
 #include "mem/packet.hh"
@@ -28,6 +29,8 @@
 
 #include "debug/HybridDatapath.hh"
 #include "params/HybridDatapath.hh"
+
+class ThreadContext;
 
 class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
 
@@ -107,6 +110,7 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
    */
   void completeTLBRequest(PacketPtr pkt, bool was_miss);
   void completeTLBRequestForDMA(PacketPtr pkt);
+  TheISA::TLB *getCPUDTBPtr() {return cpu_dtb;}
 
   // Compute power and area of the caches.
   virtual double getTotalMemArea();
@@ -129,6 +133,7 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
   void computeCactiResults();
 
   friend class SpadPort;
+  friend class AladdinTLB;
 
  protected:
 #ifdef USE_DB
@@ -136,11 +141,19 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
 #endif
 
  private:
+  TheISA::TLB * cpu_dtb;
   unsigned dma_load_cycles;
   unsigned dma_store_cycles;
   unsigned compute_cycles;
   unsigned memory_cycles;
   unsigned overlap_cycles;
+  unsigned dma_load_overlap_cycles;
+  unsigned dma_store_overlap_cycles;
+  unsigned dma_load_overlap_compute_cycles;
+  unsigned dma_load_overlap_memory_cycles;
+  bool hostPageWalk;
+  long long total_translation_cycles;
+  long long trigger_page_walk_cycles;
   // typedef uint32_t FlagsType;
 
   /* All possible types of memory operations supported by Aladdin. */
@@ -216,7 +229,8 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
   // Virtual address translation.
   bool issueTLBRequestTiming(Addr addr, unsigned size, bool isLoad, unsigned node_id);
   bool issueTLBRequestInvisibly(Addr addr, unsigned size, bool isLoad, unsigned node_id);
-  PacketPtr createTLBRequestPacket(Addr addr, unsigned size, bool isLoad, unsigned node_id, unsigned channel_idx = 0, DmaPort::DmaReqState *dmaReqState = nullptr);
+  PacketPtr createTLBRequestPacket(Addr cpu_taddr, unsigned size, bool isLoad, unsigned node_id);
+  PacketPtr createTLBRequestPacketForDma(Addr cpu_vaddr, unsigned size, bool isLoad, unsigned node_id, unsigned channel_idx, DmaPort::DmaReqState *dmaReqState, Addr acc_taddr);
 
   // Cache access functions.
   bool issueCacheRequest(Addr addr,
@@ -271,8 +285,10 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
 
   class DatapathSenderState : public Packet::SenderState {
    public:
-    DatapathSenderState(unsigned _node_id, bool _is_ctrl_signal = false)
-        : node_id(_node_id), is_ctrl_signal(_is_ctrl_signal) {}
+    DatapathSenderState(unsigned _node_id, bool _is_ctrl_signal = false, 
+                        bool _is_cpu_sync = false, DmaMemAccess *_mem_access = nullptr)
+        : node_id(_node_id), is_ctrl_signal(_is_ctrl_signal), 
+          is_cpu_sync(_is_cpu_sync), mem_access(_mem_access) {}
 
     /* Aladdin node that triggered the memory access. */
     unsigned node_id;
@@ -282,6 +298,10 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
      * differently) or an ordinary memory access.
      */
     bool is_ctrl_signal;
+
+    /* DMA operation synchronizes with CPU preparation*/
+    bool is_cpu_sync;
+    DmaMemAccess *mem_access;
   };
 
   class DmaEvent : public Event {
@@ -323,6 +343,9 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
   bool dmaInRetry;
   unsigned maxDmaReq;
   unsigned outstandingDmaReq;
+
+  // There is at most 2 concurrent on the accelerator(double-buffering)
+  int availAccTask;
 
   System *sys;
 

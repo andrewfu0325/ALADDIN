@@ -69,7 +69,7 @@ $(EXEC)-instrumented: full.s
 				$(CPPFLAGS) \
         $(BMARK_SPECIFIC_CFLAGS) \
         -o $*.llvm $<
-	opt -S -load=$(TRACER) -fulltrace -labelmapwriter $*.llvm -o $@
+	opt -S -load=$(TRACER) -labelmapwriter -fulltrace  $*.llvm -o $@
 
 clean-trace:
 	rm -rf $(COMMON_TEMP_DIR)

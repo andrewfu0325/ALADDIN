@@ -8,6 +8,7 @@
 
 #define WRITE_OUTPUT false
 #define CHECK_OUTPUT false
+#define CACHELINE_SIZE 64
 
 #include "support.h"
 

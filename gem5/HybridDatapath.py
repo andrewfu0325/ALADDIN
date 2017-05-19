@@ -34,6 +34,7 @@ class HybridDatapath(MemObject):
       "that will be modified by a dmaStore before issuing the DMA request.")
   dmaFetchFromDRAM = Param.Bool(False, "Enable DMA fetches from DRAM.")
   isPerfectTranslation = Param.Bool(False, "Enable perfect address translation.")
+  hostPageWalk = Param.Bool(False, "Enable host page walking")
 
   # Cache parameters.
   cacheSize = Param.String("16kB", "Private cache size")
@@ -45,8 +46,9 @@ class HybridDatapath(MemObject):
   cactiCacheQueueConfig = Param.String("", "CACTI cache queue config file")
   tlbEntries = Param.Int(0, "number entries in TLB (0 implies infinite)")
   tlbAssoc = Param.Int(4, "Number of sets in the TLB")
-  tlbHitLatency = Param.Cycles(0, "number of cycles for a hit")
-  tlbMissLatency = Param.Cycles(10, "number of cycles for a miss")
+  tlbHitLatency = Param.Cycles(2, "number of cycles for a hit")
+  tlbMissLatency = Param.Cycles(400, "number of cycles for a miss")
+  tlbAccessLatency = Param.Cycles(2, "number of cycles for a miss")
   tlbPageBytes = Param.Int(4096, "Page Size")
   tlbCactiConfig = Param.String("", "TLB CACTI configuration file.")
   numOutStandingWalks = Param.Int(4, "num of outstanding page walks")

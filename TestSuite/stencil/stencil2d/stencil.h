@@ -12,18 +12,35 @@
 #define MAX 1000
 #define MIN 1
 
-//Set number of iterations to execute
-#define MAX_ITERATION 1
+#define NUM_ACC_TASK 4
+#define SECOND_ORIG row_size*col_size
+#define ORIG_SIZE row_size*col_size*sizeof(TYPE)
 
-void stencil( TYPE orig[row_size * col_size],
-        TYPE sol[row_size * col_size],
-        TYPE filter[f_size] );
+#define SECOND_SOL row_size*col_size
+#define SOL_SIZE row_size*col_size*sizeof(TYPE)
+
+#define SECOND_FILTER f_size
+#define FILTER_SIZE f_size*sizeof(TYPE)
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Test harness interface code.
 
 struct bench_args_t {
     TYPE orig[row_size*col_size];
-    TYPE sol[row_size*col_size];
     TYPE filter[f_size];
+    TYPE sol[row_size*col_size];
 };
+
+#define ACC_TASK_SIZE sizeof(struct bench_args_t)
+
+/* ACC scratchpad */
+TYPE orig[col_size*row_size * 2];
+TYPE filter[f_size * 2];
+TYPE sol[col_size*row_size * 2];
+////////////////////////
+
+int enable[NUM_ACC_TASK+1];
+int avail[2];
+
+void stencil(struct bench_args_t args[NUM_ACC_TASK], int enable[NUM_ACC_TASK+1], int avail[2]);

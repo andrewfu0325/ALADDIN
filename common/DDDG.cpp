@@ -254,6 +254,21 @@ void DDDG::parse_instruction_line(std::string line) {
   parameter_label_per_inst.clear();
 }
 
+void DDDG::parse_cpu_dep(std::string line) {
+  assert(curr_node->is_dma_op());
+  int size, is_reg;
+  char char_value[256];
+  char label[256];
+  sscanf(line.c_str(),
+         "%d,%[^,],%d,%[^,],\n",
+         &size,
+         char_value,
+         &is_reg,
+         label);
+  double value = strtod(char_value, NULL);
+  parameter_value_per_inst.push_back(((Addr)value) & ADDR_MASK);
+}
+
 void DDDG::parse_parameter(std::string line, int param_tag) {
   int size, is_reg;
   char char_value[256];
@@ -414,23 +429,61 @@ void DDDG::parse_result(std::string line) {
     uint64_t bits = FP2BitsConverter::Convert(value, mem_size, is_float);
     curr_node->set_mem_access(mem_address, mem_size, is_float, bits);
   } else if (curr_node->is_dma_op()) {
-    Addr base_addr;
+    Addr taddr, enable_addr, avail_addr;
+    bool cpu_sync;
     size_t src_off, dst_off, size;
     // Determine DMA interface version.
     if (parameter_value_per_inst.size() == 4) {
       // v1 (src offset = dst offset).
-      base_addr = parameter_value_per_inst[1];
+      taddr = parameter_value_per_inst[1];
       src_off = (size_t) parameter_value_per_inst[2];
       dst_off = src_off;
       size = (size_t) parameter_value_per_inst[3];
+      cpu_sync = false;
+      enable_addr = 0;
+      avail_addr = 0;
     } else if (parameter_value_per_inst.size() == 5) {
       // v2 (src offset is separate from dst offset).
-      base_addr = parameter_value_per_inst[1];
+      taddr = parameter_value_per_inst[1];
       src_off = (size_t) parameter_value_per_inst[2];
       dst_off = (size_t) parameter_value_per_inst[3];
       size = (size_t) parameter_value_per_inst[4];
+      cpu_sync = false;
+      enable_addr = 0;
+      avail_addr = 0;
+    } else if (parameter_value_per_inst.size() == 7) {
+      // v3 (Enable CPU-ACC synchronization).
+      taddr = parameter_value_per_inst[1];
+      src_off = (size_t) parameter_value_per_inst[2];
+      dst_off = (size_t) parameter_value_per_inst[3];
+      size = (size_t) parameter_value_per_inst[4];
+      if(curr_microop == LLVM_IR_DMALoad) {
+        cpu_sync = true;
+      } else {
+        cpu_sync = false;
+      }
+      enable_addr = parameter_value_per_inst[5];
+      avail_addr = parameter_value_per_inst[6];
+    } else if (parameter_value_per_inst.size() == 8) {
+      // v4 (Enable CPU-ACC synchronization).
+      // cpu trace address is not important 
+      // since "mapArrayToAccelerator()" can map cpu sim address with acc trace address
+      if(curr_node->is_dma_load()) 
+        taddr = parameter_value_per_inst[1];
+      else
+        taddr = parameter_value_per_inst[2];
+      dst_off = (size_t) parameter_value_per_inst[3];
+      src_off = (size_t) parameter_value_per_inst[4];
+      size = (size_t) parameter_value_per_inst[5];
+      if(curr_microop == LLVM_IR_DMALoad) {
+        cpu_sync = true;
+      } else {
+        cpu_sync = false;
+      }
+      enable_addr = parameter_value_per_inst[6];
+      avail_addr = parameter_value_per_inst[7];
     }
-    curr_node->set_dma_mem_access(base_addr, src_off, dst_off, size);
+    curr_node->set_dma_mem_access(taddr, src_off, dst_off, size, false, 0, cpu_sync, enable_addr, avail_addr);
     if (curr_microop == LLVM_IR_DMALoad) {
       /* If we're using full/empty bits, then we want loads and stores to
        * issue as soon as their data is available. This means that for nearly
@@ -440,7 +493,7 @@ void DDDG::parse_result(std::string line) {
       if (!datapath->isReadyMode()) {
         // For dmaLoad (which is a STORE from the accelerator's perspective),
         // enforce RAW and WAW dependencies on subsequent nodes.
-        Addr start_addr = base_addr + dst_off;
+        Addr start_addr = taddr + dst_off;
         for (Addr addr = start_addr; addr < start_addr + size; addr += 1) {
           // TODO: Storing an entry for every byte in this range is very inefficient...
           auto addr_it = address_last_written.find(addr);
@@ -454,7 +507,7 @@ void DDDG::parse_result(std::string line) {
     } else {
       // For dmaStore (which is actually a LOAD from the accelerator's
       // perspective), enforce RAW dependencies on this node.
-      Addr start_addr = base_addr + src_off;
+      Addr start_addr = taddr + src_off;
       handle_post_write_dependency(start_addr, size, num_of_instructions);
     }
   }
@@ -594,8 +647,13 @@ size_t DDDG::build_initial_dddg(size_t trace_off, size_t trace_size) {
       parse_result(line_left);
     } else if (tag.compare("f") == 0) {
       parse_forward(line_left);
+    } else if (tag.compare("c") == 0) {
+      parse_cpu_dep(line_left);
     } else {
       parse_parameter(line_left, atoi(tag.c_str()));
+    }
+    if(curr_node->get_node_id() == 8) {
+      printf("Node Id:%d, Node name: %s\n", curr_node->get_node_id(), curr_node->get_array_label().c_str());
     }
   }
 

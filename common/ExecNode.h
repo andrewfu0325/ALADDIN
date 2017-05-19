@@ -51,10 +51,14 @@ class DmaMemAccess : public MemAccess {
         , src_off(off)
         , dst_off(off) {}
 
-    DmaMemAccess(size_t src_off, size_t dst_off)
+    DmaMemAccess(size_t _src_off, size_t _dst_off, bool _cpu_sync, 
+                 long long int _enable_addr, long long int _avail_addr)
         : MemAccess()
-        , src_off(src_off)
-        , dst_off(dst_off) {}
+        , src_off(_src_off)
+        , dst_off(_dst_off)
+        , cpu_sync(_cpu_sync)
+        , enable_addr(_enable_addr)
+        , avail_addr(_avail_addr) {}
 
     /* Additional offset from vaddr/paddr.
      *
@@ -66,6 +70,9 @@ class DmaMemAccess : public MemAccess {
      */
     size_t src_off;
     size_t dst_off;
+    bool cpu_sync;
+    long long int enable_addr;
+    long long int avail_addr;
 };
 
 class ExecNode {
@@ -157,14 +164,17 @@ class ExecNode {
     mem_access->is_float = is_float;
     mem_access->value = value;
   }
-  void set_dma_mem_access(long long int vaddr,
+  void set_dma_mem_access(long long int taddr,
                           size_t src_offset,
                           size_t dst_offset,
                           size_t size_in_bytes,
                           bool is_float = false,
-                          uint64_t value = 0) {
-    mem_access = new DmaMemAccess(src_offset, dst_offset);
-    mem_access->vaddr = vaddr;
+                          uint64_t value = 0, 
+                          bool cpu_sync = false,
+                          long long int enable_addr = 0,
+                          long long int avail_addr = 0) {
+    mem_access = new DmaMemAccess(src_offset, dst_offset, cpu_sync, enable_addr, avail_addr);
+    mem_access->vaddr = taddr;
     mem_access->size = size_in_bytes;
     mem_access->is_float = is_float;
     mem_access->value = value;

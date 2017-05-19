@@ -48,6 +48,7 @@ class DDDG {
   void parse_instruction_line(std::string line);
   void parse_parameter(std::string line, int param_tag);
   void parse_result(std::string line);
+  void parse_cpu_dep(std::string line);
   void parse_forward(std::string line);
   void parse_call_parameter(std::string line, int param_tag);
   void parse_labelmap_line(std::string line);

@@ -45,6 +45,10 @@ class Gem5Datapath : public MemObject {
     context_id = _context_id;
     thread_id = _thread_id;
   }
+  
+  int getThreadId() {
+    return thread_id;
+  }
 
   void setFinishFlag(Addr _finish_flag) { finish_flag = _finish_flag; }
 
