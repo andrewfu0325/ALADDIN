@@ -25,6 +25,7 @@
 class MemAccess {
   public:
     MemAccess() : vaddr(0), paddr(0), size(0), is_float(false), value(0) {}
+    virtual ~MemAccess(){}
 
     // Address read from the trace.
     Addr vaddr;
@@ -60,6 +61,8 @@ class DmaMemAccess : public MemAccess {
         , enable_addr(_enable_addr)
         , avail_addr(_avail_addr) {}
 
+    virtual ~DmaMemAccess(){}
+
     /* Additional offset from vaddr/paddr.
      *
      * This is used to work around dependence analysis bugs when dmaLoading
@@ -71,6 +74,7 @@ class DmaMemAccess : public MemAccess {
     size_t src_off;
     size_t dst_off;
     bool cpu_sync;
+    long long int sim_vaddr;
     long long int enable_addr;
     long long int avail_addr;
 };

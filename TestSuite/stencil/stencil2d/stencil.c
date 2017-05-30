@@ -5,7 +5,7 @@
 #endif
 
 
-void stencil (struct bench_args_t args[NUM_ACC_TASK], int enable[NUM_ACC_TASK+1], int avail[2]) {
+void stencil (TYPE *orig, TYPE *filter, TYPE *sol, struct bench_args_t args[NUM_ACC_TASK], int enable[NUM_ACC_TASK+1], int avail[2]) {
 
 #ifdef DMA_INTERFACE_V4
     dmaLoad(orig, args[0].orig, 0, 0, 
@@ -22,7 +22,7 @@ void stencil (struct bench_args_t args[NUM_ACC_TASK], int enable[NUM_ACC_TASK+1]
     task_loop:for (int it = 0; it < NUM_ACC_TASK; it += 2) {
         stencil_label1_buf1:for (int r=0; r<row_size-2; r++) {
             stencil_label2_buf1:for (int c=0; c<col_size-2; c++) {
-                TYPE temp = (TYPE)0;
+                TYPE temp = (TYPE)100;
                 stencil_label3_buf1:for (int k1=0;k1<3;k1++){
                     stencil_label4_buf1:for (int k2=0;k2<3;k2++){
                         TYPE mul = filter[k1*3 + k2] * orig[(r+k1)*col_size + c+k2];
@@ -46,7 +46,7 @@ void stencil (struct bench_args_t args[NUM_ACC_TASK], int enable[NUM_ACC_TASK+1]
         if(NUM_ACC_TASK > 1) {
           stencil_label1_buf2:for (int r=0; r<row_size-2; r++) {
               stencil_label2_buf2:for (int c=0; c<col_size-2; c++) {
-                  TYPE temp = (TYPE)0;
+                  TYPE temp = (TYPE)100;
                   stencil_label3_buf2:for (int k1=0;k1<3;k1++){
                       stencil_label4_buf2:for (int k2=0;k2<3;k2++){
                           TYPE mul = filter[SECOND_FILTER + k1*3 + k2] * orig[SECOND_ORIG + (r+k1)*col_size + c+k2];

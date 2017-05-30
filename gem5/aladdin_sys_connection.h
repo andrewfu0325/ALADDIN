@@ -109,8 +109,10 @@ void mapArrayToAccelerator(unsigned req_code,
  *   Nothing.
  */
 void regAccTaskDataForCache(unsigned req_code,
-                           void* addr,
-                           size_t size);
+                            void* addr,
+                            size_t size);
+
+void delAccTaskDataForCache(unsigned req_code);
 
 #ifdef __cplusplus
 }  // extern "C"

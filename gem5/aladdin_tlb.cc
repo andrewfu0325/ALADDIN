@@ -10,6 +10,8 @@
 /*hack, to fix*/
 #define MIN_CACTI_SIZE 64
 
+extern std::map<uint64_t, uint64_t> ReqLatency;
+
 AladdinTLB::AladdinTLB(HybridDatapath* _datapath,
                        unsigned _num_entries,
                        unsigned _assoc,
@@ -171,7 +173,7 @@ std::pair<Addr, Addr> AladdinTLB::translateTraceToSimVirtual(PacketPtr pkt) {
       DmaMemAccess* mem_access = node->get_dma_mem_access();
       DPRINTF(HybridDatapath,
               "Offset of trace cpu address: %d\n", node->is_dma_load()? mem_access->src_off : mem_access->dst_off);
-      array_offset += node->is_dma_load()? mem_access->src_off : mem_access->dst_off;
+      array_offset = node->is_dma_load()? mem_access->src_off : mem_access->dst_off;
     }
     /////////////////////////////////////////////////////////////
 
@@ -233,7 +235,11 @@ bool AladdinTLB::translateTiming(PacketPtr pkt, bool isDma) {
     requests_this_cycle++;
   }
 
-  TheISA::TLB *cpu_dtb = datapath->getCPUDTBPtr();
+  Addr paddr = infiniteBackupTLB[vpn] + page_offset;
+  if(pkt->isRead() && ReqLatency.find(paddr) == ReqLatency.end()) {
+    ReqLatency.insert(std::make_pair(paddr, curTick()));
+    printf("Start DMA Req cycles 0x%x: %u\n", paddr, ReqLatency[paddr]);
+  }
 
   reads++;  // Both TLB hits and misses perform a read.
   if (tlbMemory->lookup(vpn, ppn)) {
@@ -250,32 +256,76 @@ bool AladdinTLB::translateTiming(PacketPtr pkt, bool isDma) {
     datapath->outstandingDmaReq++;
     return true;
   } else {
-    AladdinTLB::TLBSenderStateForDma* state =
-      dynamic_cast<AladdinTLB::TLBSenderStateForDma*>(pkt->senderState);
 
+    if(datapath->hostPageWalk) {
+			if (missQueue.find(vpn) == missQueue.end()) {
+        AladdinTLB::TLBSenderStateForDma* state =
+          dynamic_cast<AladdinTLB::TLBSenderStateForDma*>(pkt->senderState);
+				if(state->trigger_page_walk_start == -1) {
+					state->trigger_page_walk_start = curTick() / 1000;
+				}
+				if (numOutStandingWalks != 0 &&
+						outStandingWalks.size() >= numOutStandingWalks) {
+					DPRINTF(HybridDatapath,
+							"Too many outstanding page walk, wait for next cycle\n");
+					return false;
+				}
 
-    TheISA::TlbEntry *entry = cpu_dtb->lookup(vaddr); 
+				TheISA::TLB *cpu_dtb = datapath->getCPUDTBPtr();
+				MMUCache *mmuCache = cpu_dtb->mmuCache;
+				MMUCache::PageTable *L4PT = mmuCache->getTopLevelPageTable();
 
-    if(datapath->hostPageWalk && entry != nullptr) {
-     Addr paddr = entry->pageStart() + page_offset;
-      DPRINTF(HybridDatapath, "TLB hit(%s) in cpu's dtb. vaddr %#x ->paddr %#x\n", 
-              pkt->cmd.isRead()?"load":"store", vaddr, paddr);
-      hits++;
-      tlb_hits++;
-      hitQueue.push_back(pkt);
-      deHitQueueEvent* hq = new deHitQueueEvent(this, isDma);
-      datapath->schedule(hq, datapath->clockEdge((Cycles)(hitLatency * 8)));
-      // Due to the complexity of translating trace to virtual address, return
-      // the complete address, not just the page number.
-      *(pkt->getPtr<Addr>()) = paddr;
-      datapath->outstandingDmaReq++;
-      return true;
+				int delay(0);
+
+				vaddr &= mask(48);
+				PTIdx L4Idx = (PTIdx)(vaddr >> 39);
+				PTIdx L3Idx = (PTIdx)((vaddr >> 30) & mask(9));
+				PTIdx L2Idx = (PTIdx)((vaddr >> 21) & mask(9));
+
+				MMUCacheTag L3Tag = L4PT->startAddr + L4Idx;
+				delay += (mmuCache->isTagPresent(L3Tag) ? 10 : 400);
+				MMUCache::PageTable *L3PT = mmuCache->walkPageTable(L4PT, L4Idx);
+
+				MMUCacheTag L2Tag = L3PT->startAddr + L3Idx;
+				delay += (mmuCache->isTagPresent(L2Tag) ? 2: 400);
+				MMUCache::PageTable *L2PT = mmuCache->walkPageTable(L3PT, L3Idx);
+
+				MMUCacheTag L1Tag = L2PT->startAddr + L2Idx;
+				delay += (mmuCache->isTagPresent(L1Tag)? 2 : 400);
+				mmuCache->walkPageTable(L2PT, L2Idx);
+
+				// The last level page table needs to go through memeory
+				delay += 410;
+
+				outStandingWalks.push_back(vpn);
+				outStandingWalkReturnEvent* mq = new outStandingWalkReturnEvent(this, isDma, pageBytes);
+				DPRINTF(HybridDatapath, "TLB Miss latency for host page walking: %d\n", delay);
+				datapath->schedule(mq, datapath->clockEdge((Cycles)delay));
+				numOccupiedMissQueueEntries++;
+				DPRINTF(HybridDatapath,
+						"Allocated TLB miss entry for addr %#x, page %#x\n",
+						vaddr,
+						vpn);
+
+				tlb_misses++;
+				misses++;
+				missQueue.insert({ vpn, pkt });
+				datapath->outstandingDmaReq++;
+				return true;
+			} else {
+				DPRINTF(HybridDatapath,
+						"Collapsed into existing miss entry for page %#x\n",
+						vpn);
+				return false; 
+			}
     } else {
       // TLB miss! Let the TLB handle the walk, etc
       DPRINTF(HybridDatapath, "TLB miss(%s) for addr %#x\n", 
               pkt->cmd.isRead()?"load":"store", vaddr);
 
       if (missQueue.find(vpn) == missQueue.end()) {
+        AladdinTLB::TLBSenderStateForDma* state =
+          dynamic_cast<AladdinTLB::TLBSenderStateForDma*>(pkt->senderState);
         if(state->trigger_page_walk_start == -1) {
           state->trigger_page_walk_start = curTick() / 1000;
         }

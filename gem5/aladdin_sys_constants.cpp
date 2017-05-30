@@ -73,6 +73,7 @@ int NOT_COMPLETED     = 0x002DECAF;
 int DUMP_STATS        = 0x003DECAF;
 int RESET_STATS       = 0x004DECAF;
 int REG_ACC_TASK_DATA = 0x005DECAF;
+int DEL_ACC_TASK_DATA = 0x006DECAF;
 
 const char* DUMP_STATS_EXIT_SIM_SIGNAL = "statistics_dump:";
 const char* RESET_STATS_EXIT_SIM_SIGNAL = "statistics_reset:";

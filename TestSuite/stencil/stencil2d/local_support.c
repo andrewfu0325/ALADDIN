@@ -20,24 +20,23 @@ int check_data( void *vdata, void *vref );
 
 char *run_benchmark() {
   // Parse command line.
-  char *in_file;
+/*  char *in_file;
   in_file = "input.data";
   // Load input data
   int in_fd;
   in_fd = open( in_file, O_RDONLY );
-  assert( in_fd>0 && "Couldn't open input data file");
+  assert( in_fd>0 && "Couldn't open input data file");*/
 
   void *vargs, *vinput;
   posix_memalign((void**)&vargs, CACHELINE_SIZE, INPUT_SIZE);
   posix_memalign((void**)&vinput, CACHELINE_SIZE, INPUT_SIZE);
   assert(vinput!=NULL && vargs!=NULL && "Out of memory" );
 
-
-  input_to_data(in_fd, (void*)vargs);
-
+//  input_to_data(in_fd, (void*)vargs);
 
   struct bench_args_t *args = (struct bench_args_t *)vargs;
   struct bench_args_t *input = (struct bench_args_t *)vinput;
+  struct spad_t spad;
 
 #ifdef GEM5_HARNESS
 // Construct a mapping between Acc scratchpad and CPU memory buffer
@@ -52,8 +51,9 @@ char *run_benchmark() {
       MACHSUITE_STENCIL_2D, "enable", (void*)&enable, sizeof(enable));
   mapArrayToAccelerator(
       MACHSUITE_STENCIL_2D, "avail", (void*)&avail, sizeof(avail));
-
   int volatile finish_flag = NOT_COMPLETED;
+#endif
+
   int orig_num = sizeof(args[0].orig) / sizeof(TYPE);
   int sol_num = sizeof(args[0].sol) / sizeof(TYPE);
   int filter_num = sizeof(args[0].filter) / sizeof(TYPE);
@@ -62,55 +62,66 @@ char *run_benchmark() {
   // "it" starts from "1" instead of "0" is in order to generate getElementPtr in llvm trace
   for(int it = 1; it < NUM_ACC_TASK + 1; it++) {
     printf("Zero-out Task %d\n", it - 1);
-/*    for(int i = 0; i < orig_num; i++) {
+    for(int i = 0; i < orig_num; i++) {
       args[it - 1].orig[i] = 0;
       input[it - 1].orig[i] = i;
     }
     for(int i = 0; i < sol_num; i++) {
       args[it - 1].sol[i] = 0;
+      input[it - 1].sol[i] = 0;
     }
     for(int i = 0; i < filter_num; i++) {
       args[it - 1].filter[i] = 0;
       input[it - 1].filter[i] = i;
-    }*/
+    }
   }
 
-//  regAccTaskDataForCache(MACHSUITE_STENCIL_2D, args, sizeof(args));
-  // Preparation
-  printf("Initialize the first Task %d\n", 0);
+#ifdef GEM5_HARNESS
+  #ifdef CACHE_FORWARDING
+  regAccTaskDataForCache(MACHSUITE_STENCIL_2D, args, sizeof(args[0].orig) + sizeof(args[0].filter));
+  #endif
+#endif
+
+  printf("Initialize Task %d\n", 0);
   int it = 1;
-/*  for(int i = 0; i < orig_num; i++) {
+  for(int i = 0; i < orig_num; i++) {
     args[it - 1].orig[i] = input[it - 1].orig[i];
   }
   for(int i = 0; i < filter_num; i++) {
     args[it - 1].filter[i] = input[it - 1].filter[i];
-  }*/
+  }
   enable[it] = 1;
 
-  invokeAcceleratorAndReturn(MACHSUITE_STENCIL_2D, &finish_flag);
-
 #ifdef GEM5_HARNESS
-  m5_work_begin(0,0);
+  invokeAcceleratorAndReturn(MACHSUITE_STENCIL_2D, &finish_flag);
 #endif
+
   for(int it = 2; it < NUM_ACC_TASK + 1; it++) {
+#ifdef GEM5_HARNESS
+  #ifdef CACHE_FORWARDING
+    regAccTaskDataForCache(MACHSUITE_STENCIL_2D, &args[it - 1], sizeof(args[0].orig) + sizeof(args[0].filter));
+    // Stop preparation if current spad is not available
+    while(avail == 0);
+  #endif
+#endif
     printf("Initialize Task %d\n", it - 1);
-/*    for(int i = 0; i < orig_num; i++) {
+    for(int i = 0; i < orig_num; i++) {
       args[it - 1].orig[i] = input[it - 1].orig[i];
     }
     for(int i = 0; i < filter_num; i++) {
       args[it - 1].filter[i] = input[it - 1].filter[i];
-    }*/
+    }
     enable[it] = 1;
   }
+
 #ifdef GEM5_HARNESS
-  m5_work_end(0,0);
+  while(finish_flag == NOT_COMPLETED);
+  #ifdef CACHE_FORWARDING
+    delAccTaskDataForCache(MACHSUITE_STENCIL_2D);
+  #endif
 #endif
 
-  while(finish_flag == NOT_COMPLETED)
-    printf("ACC Avail: %d\n", avail[1]);
-#else
-  stencil(args, enable, avail);
-#endif
+  stencil(spad.orig, spad.filter, spad.sol, args, enable, avail);
   return vargs;
 }
 
@@ -120,6 +131,12 @@ char *run_benchmark() {
 TYPE[row_size*col_size]: input matrix
 %% Section 2
 TYPE[f_size]: filter coefficients
+#ifdef GEM5_HARNESS
+  m5_work_begin(0,0);
+#endif
+#ifdef GEM5_HARNESS
+  m5_work_end(0,0);
+#endif
 */
 
 void input_to_data(int fd, void *vdata) {

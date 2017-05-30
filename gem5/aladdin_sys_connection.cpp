@@ -35,7 +35,11 @@ void regAccTaskDataForCache(unsigned req_code, void *addr, size_t size) {
   mapping.request_code = req_code;
   mapping.size = size;
 
-  syscall(SYS_fcntl, ALADDIN_FD, REG_ACC_TASK_DATA, mapping);
+  syscall(SYS_fcntl, ALADDIN_FD, REG_ACC_TASK_DATA, &mapping);
+}
+
+void delAccTaskDataForCache(unsigned req_code) {
+  syscall(SYS_fcntl, ALADDIN_FD, DEL_ACC_TASK_DATA, NULL);
 }
 
 void dumpGem5Stats(char* stats_desc) {

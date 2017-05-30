@@ -3,11 +3,11 @@
 bmk_home=${ALADDIN_HOME}/TestSuite/stencil/stencil2d
 gem5_dir=${ALADDIN_HOME}/../..
 
- ${gem5_dir}/build/X86_MOESI_CMP_directory/gem5.opt \
+  ${gem5_dir}/build/X86_MOESI_CMP_directory/gem5.opt \
   --debug-flags=WorkItems,HybridDatapath \
   --outdir=${bmk_home}/outputs \
   ${gem5_dir}/configs/aladdin/aladdin_se.py \
-  --num-cpus=4 \
+  --num-cpus=1 \
   --enable_prefetchers \
   --num-mems=2 \
   --mem-size=1GB \
@@ -18,7 +18,7 @@ gem5_dir=${ALADDIN_HOME}/../..
   --ruby \
   --topology=Cluster \
   --caches \
-  --l1d_size=64kB \
+  --l1d_size=8kB \
   --l1i_size=32kB \
   --l1d_assoc=2 \
   --l1i_assoc=2 \
@@ -33,7 +33,7 @@ gem5_dir=${ALADDIN_HOME}/../..
   --dir_size=2MB \
   --dir_mshrs=32 \
   --dir_latency=4 \
-  --dma_outstanding_requests=16 \
+  --dma_outstanding_requests=8 \
   --bus_bw=16 \
   --xbar_width=4096 \
   --accel_cfg_file=${bmk_home}/gem5.cfg \

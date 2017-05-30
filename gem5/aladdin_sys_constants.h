@@ -69,6 +69,9 @@ extern int ALADDIN_MAP_ARRAY;
 // fcntl command that regs an array for the L1 cache to enable forwarding.
 extern int REG_ACC_TASK_DATA;
 
+// fcntl command that disable L1 cache-forwarding for accelerator.
+extern int DEL_ACC_TASK_DATA;
+
 // A preprovided sentinel value to detect changes in finish flags.
 extern int NOT_COMPLETED;
 

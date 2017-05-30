@@ -35,12 +35,14 @@ struct bench_args_t {
 #define ACC_TASK_SIZE sizeof(struct bench_args_t)
 
 /* ACC scratchpad */
-TYPE orig[col_size*row_size * 2];
-TYPE filter[f_size * 2];
-TYPE sol[col_size*row_size * 2];
+struct spad_t {
+    TYPE orig[col_size*row_size * 2];
+    TYPE filter[f_size * 2];
+    TYPE sol[col_size*row_size * 2];
+};
 ////////////////////////
 
 int enable[NUM_ACC_TASK+1];
 int avail[2];
 
-void stencil(struct bench_args_t args[NUM_ACC_TASK], int enable[NUM_ACC_TASK+1], int avail[2]);
+void stencil(TYPE *orig, TYPE *filter, TYPE *sol, struct bench_args_t args[NUM_ACC_TASK], int enable[NUM_ACC_TASK+1], int avail[2]);

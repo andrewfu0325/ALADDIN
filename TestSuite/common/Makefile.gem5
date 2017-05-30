@@ -39,7 +39,7 @@ bench-gem5: $(ALL_SRCS) $(GEM5_FULL_SRCS)
 
 bench-gem5-accel: $(ALL_SRCS) $(GEM5_FULL_SRCS)
 	@echo Building benchmark $(BMARK) for gem5 with HW acceleration.
-	@$(CC) $(GEM5_CFLAGS) $(CFLAGS) -DGEM5_HARNESS $(ALL_SRCS) $(GEM5_FULL_SRCS) $(INCLUDES) -o $(BMARK)-gem5-accel $(LFLAGS)
+	@$(CC) $(GEM5_CFLAGS) $(GEM5_SPECIFIC_CFLAGS) $(CFLAGS) -DGEM5_HARNESS $(ALL_SRCS) $(GEM5_FULL_SRCS) $(INCLUDES) -o $(BMARK)-gem5-accel $(LFLAGS)
 
 clean-gem5:
 	rm -rf $(BMARK)-gem5 $(BMARK)-gem5-accel

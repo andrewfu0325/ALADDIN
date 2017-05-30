@@ -33,6 +33,7 @@ const unsigned int maxInflightNodes = 100;
 int DmaReadHit = 0;
 int DmaReadMiss = 0;
 int NumDMAReq = 0;
+int DmaRead = 0;
 std::map<uint64_t, uint64_t> ReqLatency;
 
 
@@ -94,6 +95,7 @@ HybridDatapath::HybridDatapath(const HybridDatapathParams* params)
   dma_store_overlap_cycles = 0;
   dma_load_overlap_memory_cycles = 0;
   dma_load_overlap_compute_cycles = 0;
+  evictedBytes = 0;
 
   total_translation_cycles = 0;
   trigger_page_walk_cycles = 0;
@@ -435,12 +437,13 @@ bool HybridDatapath::step() {
     printf("Overlapped cycles: %d\n", overlap_cycles);
     printf("Num of TLB hits: %d\n", dtb.tlb_hits);
     printf("Num of TLB misses: %d\n", dtb.tlb_misses);
+    printf("Num of DMA Load Req: %d\n", DmaRead);
     printf("Num of DMA Req: %d\n", NumDMAReq);
     printf("TLB Miss Cycles: %ld\n", trigger_page_walk_cycles);
     printf("Translation Cycles: %ld\n", total_translation_cycles);
     printf("Average TLB Miss Latency: %lf\n", (double)trigger_page_walk_cycles / (double)dtb.tlb_misses);
     printf("Average Translation Latency: %lf\n", (double)total_translation_cycles / (double)NumDMAReq);
-    printf("Average DMA Request Latency: %lf\n", TotLatency / (double)NumDMAReq);
+    printf("Average DMA Load Request Latency: %lf\n", TotLatency / (double)DmaRead);
     printf("DMA Read Hit: %d\n", DmaReadHit);
     printf("DMA Read Miss: %d\n", DmaReadMiss);
     printf("DMA Read Hit Rate: %f\n", (float)DmaReadHit / ((float)DmaReadHit + (float) DmaReadMiss));
@@ -453,6 +456,7 @@ bool HybridDatapath::step() {
     NumDMAReq = 0;
     DmaReadHit = 0;
     DmaReadMiss = 0;
+    DmaRead = 0;
     if (execute_standalone) {
       // If in standalone mode, we wait dmaSetupOverhead before the datapath
       // starts, but this cost must be added to this stat. For some reason,
@@ -773,6 +777,12 @@ void HybridDatapath::issueDmaRequest(unsigned node_id) {
 //  Addr base_addr = mem_access->vaddr;
   Addr acc_base_taddr = mem_access->vaddr;
   size_t size = mem_access->size;  // In bytes.
+/*  if (size >= evictedBytes && evictedBytes > 0 && isLoad) {
+    printf("Total received evicted bytes: %d\n", evictedBytes);
+    size -= evictedBytes;
+    evictedBytes = 0;
+    recvEvictedAddr.clear();
+  }*/
 
   // Addr src_taddr = (mem_access->src_taddr + mem_access->src_off) & ADDR_MASK;
   // Addr dst_taddr = (mem_access->dst_taddr + mem_access->dst_off) & ADDR_MASK;
@@ -810,32 +820,49 @@ void HybridDatapath::issueDmaRequest(unsigned node_id) {
    */
 
 //  Addr cpu_taddr = isLoad? src_taddr : dst_taddr;
-  Addr acc_taddr = acc_base_taddr + (isLoad? mem_access->dst_off : mem_access->src_off);
+  size_t off = (isLoad ? mem_access->dst_off : mem_access->src_off);
+  Addr acc_taddr = acc_base_taddr + off;
 
   issueTLBRequestInvisibly(acc_taddr, size, isLoad, node_id);
 
   DPRINTF(HybridDatapath,
-          "issueDmaRequest(%s): acc_taddr: %#x, size: %u\n",
-          isLoad?"Load":"Store", acc_taddr, size);
+          "issueDmaRequest(%s) for %s: acc_base_taddr: %#x, off: %u, size: %u\n",
+          isLoad?"Load":"Store", array_label.c_str(), acc_base_taddr, off, size);
 
   Addr cpu_paddr = mem_access->paddr;
+  Addr cpu_sim_vaddr = mem_access->sim_vaddr;
 
   DmaEvent* dma_event = new DmaEvent(this, node_id);
+  DmaPort::DmaReqState *reqState = new DmaPort::DmaReqState(dma_event, size, cpu_paddr, 0);
+  unsigned channel_idx = spadPort.addNewChannel(reqState);
 
   if(perfectTranslation) {
-    uint8_t* data = new uint8_t[size];
-    if (!isLoad) {
-      scratchpad->readData(array_label, acc_taddr, size, data);
+    for (ChunkGenerator gen(cpu_paddr, size, cacheLineSize);
+         !gen.done(); gen.next()) {
+      uint8_t* data = new uint8_t[gen.size()];
+      Addr req_sim_vaddr = cpu_sim_vaddr + gen.complete();
+      if (!isLoad) {
+        scratchpad->readData(array_label, acc_taddr + gen.complete(), gen.size(), data);
+      } else {
+        if(recvEvictedAddr.find(req_sim_vaddr) != recvEvictedAddr.end()) {
+          printf("Don't send dma vaddr(%x) for node %d: %x\n", req_sim_vaddr, node_id);
+          reqState->totBytes -= gen.size();
+          recvEvictedAddr.erase(req_sim_vaddr);
+          continue;
+        }
+      } 
+      spadPort.dmaReqOnChannel(
+          cmd, gen.addr(), gen.size(), data, 0, reqState, flags, channel_idx);
     }
-    spadPort.dmaAction(
-        cmd, cpu_paddr, size, dma_event, data, 0, flags);
+    if (reqState->totBytes == 0) {
+      inflight_dma_nodes[node_id] = Returned;
+      delete dma_event;
+      delete reqState;
+    }
+    spadPort.sendDma();
+    //spadPort.dmaAction(
+    //    cmd, cpu_paddr, size, dma_event, data, 0, flags);
   } else {
-    // one DMA request sender state for every action, that is then
-    // split into many requests and packets based on the block size,
-    // i.e. cache line size
-    DmaPort::DmaPort::DmaReqState *reqState = new DmaPort::DmaPort::DmaReqState(dma_event, size, cpu_paddr, 0);
-    unsigned channel_idx = spadPort.addNewChannel(reqState);
-
     // Get simulater virtual addresses for ChunckGenerator to generate aligned addresses 
     PacketPtr trace_pkt = createTLBRequestPacket(acc_taddr, size, isLoad, node_id);
     auto result = dtb.translateTraceToSimVirtual(trace_pkt);
@@ -969,11 +996,15 @@ bool HybridDatapath::issueTLBRequestInvisibly(
     Addr acc_taddr, unsigned size, bool isLoad, unsigned node_id) {
   PacketPtr data_pkt = createTLBRequestPacket(acc_taddr, size, isLoad, node_id);
   auto result = dtb.translateTraceToSimVirtual(data_pkt);
-  Addr cpu_paddr = dtb.translateInvisibly(result.first + result.second);
+  Addr cpu_sim_vaddr = result.first + result.second;
+  Addr cpu_paddr = dtb.translateInvisibly(cpu_sim_vaddr);
   // data_pkt now contains the translated address.
   ExecNode* node = exec_nodes[node_id];
   //node->get_mem_access()->paddr = *data_pkt->getPtr<Addr>();
   node->get_mem_access()->paddr = cpu_paddr;
+  if(DmaMemAccess *mem_access = dynamic_cast<DmaMemAccess*>(node->get_mem_access())) {
+    mem_access->sim_vaddr = cpu_sim_vaddr;
+  }
   return true;
 }
 
@@ -1203,10 +1234,20 @@ void HybridDatapath::completeCacheRequest(PacketPtr pkt) {
 bool HybridDatapath::SpadPort::recvTimingResp(PacketPtr pkt) {
   // Get the DMA sender state to retrieve node id, so we can get the virtual
   // address (the packet address is possibly physical).
-  DmaEvent* event = (DmaEvent*)(getPacketCompletionEvent(pkt));
+  DmaEvent* event = dynamic_cast<DmaEvent*>(getPacketCompletionEvent(pkt));
   assert(event != nullptr && "Packet completion event is not a DmaEvent object!");
 
   unsigned node_id = event->get_node_id();
+
+  if (node_id == -1){
+    printf("ACC Recv evict: %x\n", pkt->getAddr());
+    if(datapath->recvEvictedAddr.find(pkt->getAddr()) == datapath->recvEvictedAddr.end()) {
+      datapath->evictedBytes += pkt->getSize();
+      datapath->recvEvictedAddr.insert(pkt->getAddr());
+    }
+    return true;
+  }
+
   ExecNode * node = datapath->getNodeFromNodeId(node_id);
   assert(node != nullptr && "DMA node id is invalid!");
 
@@ -1217,6 +1258,11 @@ bool HybridDatapath::SpadPort::recvTimingResp(PacketPtr pkt) {
 
   // This will compute the offset of THIS packet from the base address.
   Addr paddr = pkt->getAddr();
+  if(node->is_dma_load()) {
+    printf("Finish DMA Req cycles 0x%x: %u\n", paddr, curTick());
+    assert(ReqLatency.find(paddr) != ReqLatency.end());
+    ReqLatency[paddr] = (curTick() - ReqLatency[paddr]) / 1000;
+  }
   Addr paddr_base = getPacketAddr(pkt);
   Addr pkt_offset =  paddr - paddr_base;
   Addr acc_taddr = acc_taddr_base + 
@@ -1234,8 +1280,8 @@ bool HybridDatapath::SpadPort::recvTimingResp(PacketPtr pkt) {
   // For dmaLoads, write the data into the scratchpad.
   if (node->is_dma_load()) {
     uint8_t* data = pkt->getPtr<uint8_t>();
+    uint32_t* data_t = (uint32_t*)data;
     assert(data != nullptr && "Packet data is null!");
-
     datapath->scratchpad->writeData(array_label, acc_taddr, data, size);
   }
 

@@ -6,7 +6,7 @@
 #include <sys/stat.h>
 #include <assert.h>
 
-#define WRITE_OUTPUT 
+//#define WRITE_OUTPUT 
 //#define CHECK_OUTPUT 
 
 #include "support.h"

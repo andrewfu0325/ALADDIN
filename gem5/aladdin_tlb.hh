@@ -10,6 +10,7 @@
 /* Hard-coded the real ISA implementation 
    to get tlb lookup function */
 #include "arch/x86/tlb.hh"
+#include "arch/generic/mmu_cache.hh"
 ///////////////////////////////
 #include "base/statistics.hh"
 #include "cpu/thread_context.hh"

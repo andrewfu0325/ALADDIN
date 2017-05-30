@@ -652,9 +652,6 @@ size_t DDDG::build_initial_dddg(size_t trace_off, size_t trace_size) {
     } else {
       parse_parameter(line_left, atoi(tag.c_str()));
     }
-    if(curr_node->get_node_id() == 8) {
-      printf("Node Id:%d, Node name: %s\n", curr_node->get_node_id(), curr_node->get_array_label().c_str());
-    }
   }
 
   output_dddg();

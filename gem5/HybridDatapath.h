@@ -134,6 +134,7 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
 
   friend class SpadPort;
   friend class AladdinTLB;
+  friend class DMASequencer;
 
  protected:
 #ifdef USE_DB
@@ -154,7 +155,9 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
   bool hostPageWalk;
   long long total_translation_cycles;
   long long trigger_page_walk_cycles;
-  // typedef uint32_t FlagsType;
+
+  unsigned evictedBytes;
+  std::unordered_set<Addr> recvEvictedAddr;
 
   /* All possible types of memory operations supported by Aladdin. */
   enum MemoryOpType {
