@@ -5,7 +5,7 @@
 #endif
 
 
-void stencil (TYPE *orig, TYPE *filter, TYPE *sol, struct bench_args_t args[NUM_ACC_TASK], int enable[NUM_ACC_TASK+1], int avail[2]) {
+void stencil (TYPE *orig, TYPE *filter, TYPE *sol, struct bench_args_t args[NUM_ACC_TASK], volatile int enable[NUM_ACC_TASK+1], volatile int avail[2]) {
 
 #ifdef DMA_INTERFACE_V4
     dmaLoad(orig, args[0].orig, 0, 0, 

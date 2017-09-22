@@ -193,6 +193,28 @@ class AladdinTLB {
     unsigned pageBytes;
   };
 
+  class PageWalkEvent : public Event {
+   public:
+    /*Constructs a outStandingWalkReturnEvent*/
+    PageWalkEvent(AladdinTLB *_tlb, MMUCache *_mmuCache, int _level, 
+                  MMUCache::PageTable* _pg, Addr _vaddr, bool _hasMMUCache);
+    /*Processes the event*/
+    void process();
+    /*Returns the description of this event*/
+    const char* description() const;
+    /* Returns name of this event. */
+    virtual const std::string name() const;
+
+   private:
+    /* The pointer to the AladdinTLB unit*/
+    AladdinTLB *tlb;
+    MMUCache *mmuCache;
+    int level;
+    MMUCache::PageTable *pt;
+    Addr vaddr;
+    bool hasMMUCache;
+  };
+
   std::deque<PacketPtr> hitQueue;
   std::deque<Addr> outStandingWalks;
   std::unordered_multimap<Addr, PacketPtr> missQueue;
@@ -338,6 +360,8 @@ class AladdinTLB {
 
   unsigned tlb_hits;
   unsigned tlb_misses;
+
+  friend class HybridDatapath;
 };
 
 #endif

@@ -1,6 +1,7 @@
 KERN=stencil
 ALG=stencil3d
 
+BMARK_SPECIFIC_CFLAGS=-DDMA_INTERFACE_V4
 CFLAGS?=-O3 -Wall -Wno-unused-label
 
 SRCS=$(KERN).c local_support.c ../../common/support.c
@@ -26,7 +27,7 @@ ACCEL_NAME = stencil-stencil3d
 TEST_BIN = $(ACCEL_NAME)
 export TRACE_OUTPUT_DIR=$(ACCEL_NAME)
 ifndef WORKLOAD
-  export WORKLOAD=stencil3d
+  export WORKLOAD=stencil
 endif
 include ../../common/Makefile.tracer
 include ../../common/Makefile.gem5

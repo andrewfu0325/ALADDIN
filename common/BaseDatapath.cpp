@@ -591,6 +591,8 @@ void BaseDatapath::loopUnrolling() {
         prev_branch = node;
       }
       auto unroll_it = getUnrollFactor(node);
+      if(unroll_it != unrolling_config.end()) {
+      }
       if (unroll_it == unrolling_config.end() || unroll_it->second == 0) {
         // not unrolling branch
         if (!node->is_call_op() && !node->is_dma_op()) {

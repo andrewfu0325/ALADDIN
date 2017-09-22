@@ -34,6 +34,7 @@ class HybridDatapath(MemObject):
       "that will be modified by a dmaStore before issuing the DMA request.")
   dmaFetchFromDRAM = Param.Bool(False, "Enable DMA fetches from DRAM.")
   isPerfectTranslation = Param.Bool(False, "Enable perfect address translation.")
+  cacheForwarding = Param.Bool(False, "Enable perfect address translation.")
   hostPageWalk = Param.Bool(False, "Enable host page walking")
 
   # Cache parameters.

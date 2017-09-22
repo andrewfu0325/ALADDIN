@@ -80,6 +80,10 @@ void LogicalArray::computePartitionSizes(std::vector<size_t>& size_per_part) {
 
 size_t LogicalArray::getPartitionIndex(Addr addr) {
   int rel_addr = addr - base_addr;
+  if(rel_addr >= total_size) {
+    printf("addr: %x, base_addr: %x\n", addr, base_addr);
+    printf("rel_size: %d, total_size: %d\n", rel_addr, total_size);
+  }
   assert(rel_addr < total_size);
   size_t part_index = 0;
   if (partition_type == cyclic) {

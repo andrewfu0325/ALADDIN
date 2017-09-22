@@ -15,13 +15,12 @@ int main(int argc, char **argv)
   int i, fd;
   struct prng_rand_t state;
 
-  // 3D discrete Laplacian
-  data.C[0] = 6;
-  data.C[1] = -1;
-  // Random matrix
+  // Fill data structure
   prng_srand(1,&state);
-  for(i=0; i<SIZE; i++)
+  for(i=0; i<row_size*col_size; i++)
     data.orig[i] = prng_rand(&state)%(MAX-MIN) + MIN;
+  for(i=0; i<f_size; i++)
+    data.filter[i] = prng_rand(&state)%(MAX-MIN) + MIN;
 
   // Open and write
   fd = open("input.data", O_WRONLY|O_CREAT|O_TRUNC, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);

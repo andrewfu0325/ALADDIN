@@ -11,6 +11,7 @@
 #include "base/flags.hh"
 #include "base/trace.hh"
 #include "base/types.hh"
+#include "cpu/base.hh"
 #include "cpu/thread_context.hh"
 #include "dev/dma_device.hh"
 #include "mem/mem_object.hh"
@@ -142,6 +143,7 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
 #endif
 
  private:
+  BaseCPU *cpu;
   TheISA::TLB * cpu_dtb;
   unsigned dma_load_cycles;
   unsigned dma_store_cycles;
@@ -157,7 +159,16 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
   long long trigger_page_walk_cycles;
 
   unsigned evictedBytes;
+  unsigned dmaBytes;
   std::unordered_set<Addr> recvEvictedAddr;
+
+  unsigned idle_cycles;
+  unsigned all_idle_cycles;
+  // Check idle flags
+  bool recvDma;
+  bool checkEnable;
+  bool funcBusy;
+
 
   /* All possible types of memory operations supported by Aladdin. */
   enum MemoryOpType {
@@ -439,6 +450,9 @@ class HybridDatapath : public ScratchpadDatapath, public Gem5Datapath {
 
   // Enable perfect translation
   bool perfectTranslation;
+
+  // Enable perfect translation
+  bool cacheForwarding;
 };
 
 #endif

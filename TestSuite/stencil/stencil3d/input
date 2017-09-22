@@ -1,0 +1,6 @@
+warn: system.ruby.network adopting orphan SimObject param 'int_links'
+warn: system.ruby.network adopting orphan SimObject param 'ext_links'
+0: system.remote_gdb.listener: listening for remote gdb #0 on port 7000
+0: system.remote_gdb.listener: listening for remote gdb #1 on port 7001
+0: system.remote_gdb.listener: listening for remote gdb #2 on port 7002
+0: system.remote_gdb.listener: listening for remote gdb #3 on port 7003

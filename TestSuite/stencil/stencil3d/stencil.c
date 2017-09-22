@@ -1,95 +1,76 @@
-/*
-Implementation based on algorithm described in:
-"Stencil computation optimization and auto-tuning on state-of-the-art multicore architectures"
-K. Datta, M. Murphy, V. Volkov, S. Williams, J. Carter, L. Oliker, D. Patterson, J. Shalf, K. Yelick
-SC 2008
-*/
-
 #include "stencil.h"
 
 #ifdef DMA_MODE
 #include "gem5/dma_interface.h"
 #endif
 
-void stencil3d(TYPE C[2], TYPE orig[SIZE], TYPE sol[SIZE]) {
-    int i, j, k;
-    TYPE sum0, sum1, mul0, mul1;
 
-#ifdef DMA_MODE
-    dmaLoad(&orig[0], 0 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 1 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 2 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 3 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 4 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 5 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 6 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 7 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 8 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 9 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 10 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 11 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 12 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 13 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 14 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&orig[0], 15 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaLoad(&C[0], 0, 2 * sizeof(TYPE));
+void stencil (TYPE *orig, TYPE *C, TYPE *sol, struct bench_args_t args[NUM_ACC_TASK], volatile int enable[NUM_ACC_TASK+1], volatile int avail[2]) {
+
+#ifdef DMA_INTERFACE_V4
+    dmaLoad(orig, args[0].orig, 0, 0, 
+            ORIG_SIZE, &enable[1], &avail[1]);
+    if(NUM_ACC_TASK > 1) {
+      dmaLoad(orig, args[0].orig, ORIG_SIZE, ACC_TASK_SIZE,
+              ORIG_SIZE, &enable[2], &avail[1]);
+    }
 #endif
-
-    // Handle boundary conditions by filling with original values
-    height_bound_col : for(j=0; j<col_size; j++) {
-        height_bound_row : for(k=0; k<row_size; k++) {
-            sol[INDX(row_size, col_size, k, j, 0)] = orig[INDX(row_size, col_size, k, j, 0)];
-            sol[INDX(row_size, col_size, k, j, height_size-1)] = orig[INDX(row_size, col_size, k, j, height_size-1)];
-        }
-    }
-    col_bound_height : for(i=1; i<height_size-1; i++) {
-        col_bound_row : for(k=0; k<row_size; k++) {
-            sol[INDX(row_size, col_size, k, 0, i)] = orig[INDX(row_size, col_size, k, 0, i)];
-            sol[INDX(row_size, col_size, k, col_size-1, i)] = orig[INDX(row_size, col_size, k, col_size-1, i)];
-        }
-    }
-    row_bound_height : for(i=1; i<height_size-1; i++) {
-        row_bound_col : for(j=1; j<col_size-1; j++) {
-            sol[INDX(row_size, col_size, 0, j, i)] = orig[INDX(row_size, col_size, 0, j, i)];
-            sol[INDX(row_size, col_size, row_size-1, j, i)] = orig[INDX(row_size, col_size, row_size-1, j, i)];
-        }
-    }
-
-
-    // Stencil computation
-    loop_height : for(i = 1; i < height_size - 1; i++){
-        loop_col : for(j = 1; j < col_size - 1; j++){
-            loop_row : for(k = 1; k < row_size - 1; k++){
-                sum0 = orig[INDX(row_size, col_size, k, j, i)];
-                sum1 = orig[INDX(row_size, col_size, k, j, i + 1)] +
-                       orig[INDX(row_size, col_size, k, j, i - 1)] +
-                       orig[INDX(row_size, col_size, k, j + 1, i)] +
-                       orig[INDX(row_size, col_size, k, j - 1, i)] +
-                       orig[INDX(row_size, col_size, k + 1, j, i)] +
-                       orig[INDX(row_size, col_size, k - 1, j, i)];
+    task_loop:for (int it = 0; it < NUM_ACC_TASK; it += 2) {
+        loop_height_buf1:for (int h=1; h<height_size-1; h++) {
+          loop_row_buf1:for (int r=1; r<row_size-1; r++) {
+            loop_col_buf1:for (int c=1; c<col_size-1; c++) {
+                TYPE sum0, sum1, mul0, mul1;
+                sum0 = orig[(c)+col_size*(r+h*row_size)];
+                sum1 = orig[(c)+col_size*(r+(h+1)*row_size)] +
+                       orig[(c)+col_size*(r+(h-1)*row_size)] +
+                       orig[(c)+col_size*((r+1)+h*row_size)] +
+                       orig[(c)+col_size*((r-1)+h*row_size)] +
+                       orig[(c+1)+col_size*((r)+h*row_size)] +
+                       orig[(c-1)+col_size*((r)+h*row_size)];
                 mul0 = sum0 * C[0];
                 mul1 = sum1 * C[1];
-                sol[INDX(row_size, col_size, k, j, i)] = mul0 + mul1;
+                sol[c+col_size*(r+h*row_size)] = mul0 + mul1;
             }
+          }
+        }
+#ifdef DMA_INTERFACE_V4
+        dmaStore(args[0].sol, sol, it * ACC_TASK_SIZE, 0, 
+                 SOL_SIZE, NULL, &avail[1]);
+        if (it < NUM_ACC_TASK - 2) { 
+          dmaFence();
+          dmaLoad(orig, args[0].orig, 0, (it+2)*ACC_TASK_SIZE,
+                  ORIG_SIZE, &enable[it+2+1], &avail[1]);
+        }
+#endif
+        if(NUM_ACC_TASK > 1) {
+          loop_height_buf2:for (int h=1; h<height_size-1; h++) {
+            loop_row_buf2:for (int r=1; r<row_size-1; r++) {
+              loop_col_buf2:for (int c=1; c<col_size-1; c++) {
+                  TYPE sum0, sum1, mul0, mul1;
+                  sum0 = orig[SECOND_ORIG+(c)+col_size*(r+h*row_size)];
+                  sum1 = orig[SECOND_ORIG+(c)+col_size*(r+(h+1)*row_size)] +
+                         orig[SECOND_ORIG+(c)+col_size*(r+(h-1)*row_size)] +
+                         orig[SECOND_ORIG+(c)+col_size*((r+1)+h*row_size)] +
+                         orig[SECOND_ORIG+(c)+col_size*((r-1)+h*row_size)] +
+                         orig[SECOND_ORIG+(c+1)+col_size*((r)+h*row_size)] +
+                         orig[SECOND_ORIG+(c-1)+col_size*((r)+h*row_size)];
+                  mul0 = sum0 * C[SECOND_C+0];
+                  mul1 = sum1 * C[SECOND_C+1];
+                  sol[SECOND_SOL+c+col_size*(r+h*row_size)] = mul0 + mul1;
+              }
+            }
+          }
+
+
+#ifdef DMA_INTERFACE_V4
+          dmaStore(args[0].sol, sol, (it+1)*ACC_TASK_SIZE, SOL_SIZE, 
+                   SOL_SIZE, NULL, &avail[1]);
+          if (it < NUM_ACC_TASK - 2) { 
+            dmaFence();
+            dmaLoad(orig, args[0].orig, ORIG_SIZE, (it+3)*ACC_TASK_SIZE, 
+                    ORIG_SIZE, &enable[it+3+1], &avail[1]);
+          }
+#endif
         }
     }
-
-#ifdef DMA_MODE
-    dmaStore(&sol[0], 0 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 1 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 2 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 3 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 4 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 5 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 6 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 7 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 8 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 9 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 10 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 11 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 12 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 13 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 14 * 1024 * sizeof(TYPE), PAGE_SIZE);
-    dmaStore(&sol[0], 15 * 1024 * sizeof(TYPE), PAGE_SIZE);
-#endif
 }

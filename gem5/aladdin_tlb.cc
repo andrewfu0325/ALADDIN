@@ -10,6 +10,7 @@
 /*hack, to fix*/
 #define MIN_CACTI_SIZE 64
 
+extern int DmaRead;
 extern std::map<uint64_t, uint64_t> ReqLatency;
 
 AladdinTLB::AladdinTLB(HybridDatapath* _datapath,
@@ -130,6 +131,84 @@ const char* AladdinTLB::outStandingWalkReturnEvent::description() const {
 }
 
 const std::string AladdinTLB::outStandingWalkReturnEvent::name() const {
+  return tlb->name() + ".analytical_page_walk_event";
+}
+
+AladdinTLB::PageWalkEvent::PageWalkEvent(
+  AladdinTLB *_tlb, MMUCache *_mmuCache, int _level, 
+  MMUCache::PageTable* _pt, Addr _vaddr, bool _hasMMUCache) :
+    tlb(_tlb), mmuCache(_mmuCache), level(_level), 
+    pt(_pt), vaddr(_vaddr), hasMMUCache(_hasMMUCache) {}
+
+void AladdinTLB::PageWalkEvent::process() {
+  if(level != 0)  {
+    PTIdx idx = (PTIdx)((vaddr & mask(48)) >> (39 - (4 - level) * 9)) & mask(9);
+		Addr pt_paddr = pt->startAddr + (idx << 3);
+    DPRINTF(HybridDatapath, "Level %d Page Table Addr: %#x for vaddr: %#x.\n", level, pt_paddr, vaddr);
+
+    if(!mmuCache->isTagPresent(pt_paddr) || !hasMMUCache) {
+      // MMU cache miss or not enable!
+			size_t pte_size = 8;
+			MMUCache::PageTable *npt;
+      if(level == 1)
+        npt = nullptr;
+      else
+        npt = mmuCache->walkPageTable(pt, idx);
+			AladdinTLB::PageWalkEvent *page_walk_event = new AladdinTLB::PageWalkEvent(tlb, mmuCache, level - 1, npt, vaddr, hasMMUCache);
+			DmaPort::DmaReqState *reqState = new DmaPort::DmaReqState(page_walk_event, pte_size, pt_paddr, 75 * 1000);
+
+			uint8_t *data = new uint8_t[8];
+			Request::Flags flags = Request::UNCACHEABLE;
+			MemCmd::Command cmd = MemCmd::ReadFromDRAMReq;
+			unsigned channel_idx = tlb->datapath->spadPort.addNewChannel(reqState);
+			tlb->datapath->spadPort.dmaReqOnChannel(
+					cmd, pt_paddr, pte_size, data, 0, reqState, flags, channel_idx);
+			tlb->datapath->spadPort.sendDma();
+    } else {
+      // MMU cache hit!
+			MMUCache::PageTable *npt = mmuCache->walkPageTable(pt, idx);
+			AladdinTLB::PageWalkEvent *page_walk_event = new AladdinTLB::PageWalkEvent(tlb, mmuCache, level - 1, npt, vaddr, hasMMUCache);
+      tlb->datapath->schedule(page_walk_event, tlb->datapath->clockEdge((Cycles)0));
+    }
+  } else {
+		// TLB return events are free because only the CPU's hardware control units
+		// can write to the TLB; programs can only read the TLB.
+		assert(!tlb->missQueue.empty());
+		Addr vpn = tlb->outStandingWalks.front();
+		// Retrieve translation from the infinite backup storage if it exists;
+		// otherwise, just use ppn=vpn.
+		Addr ppn;
+		if (tlb->infiniteBackupTLB.find(vpn) != tlb->infiniteBackupTLB.end()) {
+			DPRINTF(HybridDatapath, "TLB miss was resolved in the backup TLB.\n");
+			ppn = tlb->infiniteBackupTLB[vpn];
+		} else {
+			DPRINTF(HybridDatapath, "TLB miss was not resolved in the backup TLB.\n");
+			ppn = vpn;
+		}
+    DPRINTF(HybridDatapath, "Final PPN: %#x for vaddr: %#x.\n", ppn, vaddr);
+		DPRINTF(HybridDatapath, "Translated vpn %#x -> ppn %#x.\n", vpn, ppn);
+		tlb->insert(vpn, ppn);
+
+		auto range = tlb->missQueue.equal_range(vpn);
+		for (auto it = range.first; it != range.second; ++it) {
+			PacketPtr pkt = it->second;
+			Addr page_offset = pkt->getAddr() % 4096;
+			*(pkt->getPtr<Addr>()) = ppn + page_offset;
+			tlb->datapath->completeTLBRequestForDMA(pkt);
+		}
+
+		tlb->numOccupiedMissQueueEntries--;
+		tlb->missQueue.erase(vpn);
+		tlb->outStandingWalks.pop_front();
+		tlb->updates++;  // Upon completion, increment TLB
+  }
+}
+
+const char* AladdinTLB::PageWalkEvent::description() const {
+  return "Page Walker";
+}
+
+const std::string AladdinTLB::PageWalkEvent::name() const {
   return tlb->name() + ".page_walk_event";
 }
 
@@ -231,6 +310,7 @@ bool AladdinTLB::translateTiming(PacketPtr pkt, bool isDma) {
       return false;
     }
     accessTLBEvent *accessTLB = new accessTLBEvent(this);
+    //datapath->schedule(accessTLB, datapath->clockEdge(accessLatency));
     datapath->schedule(accessTLB, datapath->clockEdge(accessLatency));
     requests_this_cycle++;
   }
@@ -239,6 +319,7 @@ bool AladdinTLB::translateTiming(PacketPtr pkt, bool isDma) {
   if(pkt->isRead() && ReqLatency.find(paddr) == ReqLatency.end()) {
     ReqLatency.insert(std::make_pair(paddr, curTick()));
     printf("Start DMA Req cycles 0x%x: %u\n", paddr, ReqLatency[paddr]);
+    DmaRead++;
   }
 
   reads++;  // Both TLB hits and misses perform a read.
@@ -271,36 +352,47 @@ bool AladdinTLB::translateTiming(PacketPtr pkt, bool isDma) {
 					return false;
 				}
 
+				outStandingWalks.push_back(vpn);
+
 				TheISA::TLB *cpu_dtb = datapath->getCPUDTBPtr();
 				MMUCache *mmuCache = cpu_dtb->mmuCache;
 				MMUCache::PageTable *L4PT = mmuCache->getTopLevelPageTable();
 
-				int delay(0);
+        // Page walker simulation //
+        PageWalkEvent *page_walk_event = new PageWalkEvent(this, mmuCache, 4, L4PT, vaddr, true);
+				datapath->schedule(page_walk_event, datapath->clockEdge(Cycles(30)));
+        //////////////////////////
 
+        // Page walker emulation //
+/*				int delay(0);
+        int memAccessLatency = missLatency / 4;
 				vaddr &= mask(48);
 				PTIdx L4Idx = (PTIdx)(vaddr >> 39);
 				PTIdx L3Idx = (PTIdx)((vaddr >> 30) & mask(9));
 				PTIdx L2Idx = (PTIdx)((vaddr >> 21) & mask(9));
 
-				MMUCacheTag L3Tag = L4PT->startAddr + L4Idx;
-				delay += (mmuCache->isTagPresent(L3Tag) ? 10 : 400);
+				MMUCacheTag L3Tag = L4PT->startAddr + (L4Idx << 3);
+				delay += (mmuCache->isTagPresent(L3Tag) ? 10 : (memAccessLatency + 10));
 				MMUCache::PageTable *L3PT = mmuCache->walkPageTable(L4PT, L4Idx);
 
-				MMUCacheTag L2Tag = L3PT->startAddr + L3Idx;
-				delay += (mmuCache->isTagPresent(L2Tag) ? 2: 400);
+				MMUCacheTag L2Tag = L3PT->startAddr + (L3Idx << 3);
+				delay += (mmuCache->isTagPresent(L2Tag) ? 4: memAccessLatency);
 				MMUCache::PageTable *L2PT = mmuCache->walkPageTable(L3PT, L3Idx);
 
-				MMUCacheTag L1Tag = L2PT->startAddr + L2Idx;
-				delay += (mmuCache->isTagPresent(L1Tag)? 2 : 400);
+				MMUCacheTag L1Tag = L2PT->startAddr + (L2Idx << 3);
+				delay += (mmuCache->isTagPresent(L1Tag)? 4 : memAccessLatency);
 				mmuCache->walkPageTable(L2PT, L2Idx);
 
 				// The last level page table needs to go through memeory
-				delay += 410;
-
-				outStandingWalks.push_back(vpn);
+				delay += (memAccessLatency + 10);
 				outStandingWalkReturnEvent* mq = new outStandingWalkReturnEvent(this, isDma, pageBytes);
+        
 				DPRINTF(HybridDatapath, "TLB Miss latency for host page walking: %d\n", delay);
-				datapath->schedule(mq, datapath->clockEdge((Cycles)delay));
+				datapath->schedule(mq, curTick() + (Tick)(delay * 1000));*/
+        ///////////////////////////
+
+
+
 				numOccupiedMissQueueEntries++;
 				DPRINTF(HybridDatapath,
 						"Allocated TLB miss entry for addr %#x, page %#x\n",
@@ -336,9 +428,19 @@ bool AladdinTLB::translateTiming(PacketPtr pkt, bool isDma) {
           return false;
         }
         outStandingWalks.push_back(vpn);
-        outStandingWalkReturnEvent* mq = new outStandingWalkReturnEvent(this, isDma, pageBytes);
-        DPRINTF(HybridDatapath, "TLB Miss latency: %d\n", missLatency);
-        datapath->schedule(mq, datapath->clockEdge(missLatency));
+
+        // Page walker simulation //
+				TheISA::TLB *cpu_dtb = datapath->getCPUDTBPtr();
+				MMUCache *mmuCache = cpu_dtb->mmuCache;
+				MMUCache::PageTable *L4PT = mmuCache->getTopLevelPageTable();
+        PageWalkEvent *page_walk_event = new PageWalkEvent(this, mmuCache, 4, L4PT, vaddr, false);
+				datapath->schedule(page_walk_event, datapath->clockEdge(Cycles(10)));
+        //////////////////////////
+        // Page walker emulation //
+//        outStandingWalkReturnEvent* mq = new outStandingWalkReturnEvent(this, isDma, pageBytes);
+//				datapath->schedule(mq, curTick() + (Tick)(missLatency * 1000));
+        ///////////////////////////
+
         numOccupiedMissQueueEntries++;
         DPRINTF(HybridDatapath,
                 "Allocated TLB miss entry for addr %#x, page %#x\n",
