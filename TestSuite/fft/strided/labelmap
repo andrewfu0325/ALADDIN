@@ -1,0 +1,4 @@
+fft/inner_buf1 27
+fft/inner_buf2 65
+fft/outer_buf1 26
+fft/outer_buf2 64

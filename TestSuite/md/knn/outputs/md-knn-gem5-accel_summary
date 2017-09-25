@@ -1,0 +1,23 @@
+===============================
+        Aladdin Results        
+===============================
+Running : ./outputs/md-knn-gem5-accel
+Cycle : 142964 cycles
+Avg Power: 169.683 mW
+Idle FU Cycles: 16792 cycles
+Avg FU Power: 161.994 mW
+Avg FU Dynamic Power: 149.753 mW
+Avg FU leakage Power: 12.241 mW
+Avg MEM Power: 7.68884 mW
+Avg MEM Dynamic Power: 0.442198 mW
+Avg MEM Leakage Power: 7.24664 mW
+Total Area: 1.46134e+06 uM^2
+FU Area: 966496 uM^2
+MEM Area: 494847 uM^2
+Num of Double Precision FP Multipliers: 28
+Num of Double Precision FP Adders: 24
+Num of Shifters (32-bit): 1
+Num of Registers (32-bit): 551
+===============================
+        Aladdin Results        
+===============================
