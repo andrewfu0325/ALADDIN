@@ -7,7 +7,7 @@
 #include "support.h"
 
 #define CACHELINE_SIZE 64
-#define NUM_ACC_TASK 8
+#define NUM_ACC_TASK 1
 
 #define SECOND_K 32
 #define K_SIZE 32*sizeof(uint8_t)

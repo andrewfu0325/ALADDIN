@@ -3,7 +3,7 @@
 #include "support.h"
 
 #define CACHELINE_SIZE 64
-#define NUM_ACC_TASK 8
+#define NUM_ACC_TASK 1
 //Define input sizes
 #define height_size 32
 #define col_size 32

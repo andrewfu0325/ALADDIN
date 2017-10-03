@@ -8,7 +8,7 @@ Implementation based on http://www-igm.univ-mlv.fr/~lecroq/string/node8.html
 #include "support.h"
 
 #define CACHELINE_SIZE 64
-#define NUM_ACC_TASK 4
+#define NUM_ACC_TASK 1
 
 
 #define PATTERN_SIZE 4
